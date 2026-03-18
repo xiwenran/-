@@ -31,7 +31,7 @@ jobs:
         run: |
           pyinstaller `
             --windowed `
-            --name "PPT场景合成工具" `
+            --name "融景" `
             --add-data "templates;templates" `
             --hidden-import "PIL._tkinter_finder" `
             --hidden-import "av" `
@@ -41,11 +41,11 @@ jobs:
         shell: pwsh
 
       - name: 压缩为 ZIP
-        run: Compress-Archive -Path "dist\PPT场景合成工具" -DestinationPath "dist\PPT场景合成工具_windows_x64.zip"
+        run: Compress-Archive -Path "dist\融景" -DestinationPath "dist\融景_windows_x64.zip"
         shell: pwsh
 
       - name: 上传 Windows 安装包
         uses: actions/upload-artifact@v4
         with:
-          name: PPT场景合成工具_windows_x64
-          path: xhsbj/dist/PPT场景合成工具_windows_x64.zip
+          name: 融景_windows_x64
+          path: xhsbj/dist/融景_windows_x64.zip

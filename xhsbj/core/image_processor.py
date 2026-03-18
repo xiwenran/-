@@ -86,6 +86,70 @@ def embed_image_pil(
     return Image.fromarray(result.astype(np.uint8), "RGBA")
 
 
+def precompute_template_cache(
+    bg_img: Image.Image,
+    points: List[List[float]],
+    feather: int = 2,
+) -> dict:
+    """Precompute mask and background array for a template.
+
+    Call once per template, then pass the returned cache dict to
+    embed_image_pil_fast() for each image/frame.  Avoids redundant mask
+    computation when processing many images or video frames with the same
+    template.
+    """
+    bg_img = bg_img.convert("RGBA")
+    bg_w, bg_h = bg_img.size
+    dst_pts = order_points(points).astype(np.float64)
+
+    mask = Image.new("L", (bg_w, bg_h), 0)
+    draw = ImageDraw.Draw(mask)
+    poly = [(float(p[0]), float(p[1])) for p in dst_pts]
+    draw.polygon(poly, fill=255)
+    if feather > 0:
+        mask_orig = np.array(mask)
+        mask = mask.filter(ImageFilter.MinFilter(3))
+        mask = mask.filter(ImageFilter.GaussianBlur(feather))
+        mask = Image.fromarray(
+            np.where(mask_orig >= 128, np.array(mask), 0).astype(np.uint8)
+        )
+
+    return {
+        "dst_pts":  dst_pts,
+        "bg_size":  (bg_w, bg_h),
+        "mask_f":   np.array(mask, dtype=np.float32)[:, :, np.newaxis] / 255.0,
+        "bg_arr":   np.array(bg_img, dtype=np.float32),
+        # _coeffs / _coeffs_key filled lazily on first frame of a given size
+    }
+
+
+def embed_image_pil_fast(ppt_img: Image.Image, cache: dict) -> Image.Image:
+    """Embed using a precomputed template cache (see precompute_template_cache).
+
+    Coefficients are also cached inside `cache` keyed by ppt image size, so
+    consecutive calls with the same-size input (e.g. video frames or uniform
+    PPT screenshots) skip the numpy linear-solve entirely.
+    """
+    ppt_img = ppt_img.convert("RGBA")
+    ppt_w, ppt_h = ppt_img.size
+
+    # Lazily cache perspective coefficients per source resolution
+    size_key = (ppt_w, ppt_h)
+    if cache.get("_coeffs_key") != size_key:
+        src_pts = np.float64([[0, 0], [ppt_w, 0], [ppt_w, ppt_h], [0, ppt_h]])
+        cache["_coeffs"]     = _perspective_coeffs(src_pts, cache["dst_pts"])
+        cache["_coeffs_key"] = size_key
+
+    bg_w, bg_h = cache["bg_size"]
+    warped = ppt_img.transform(
+        (bg_w, bg_h), Image.PERSPECTIVE, cache["_coeffs"], Image.BICUBIC
+    )
+
+    warped_arr = np.array(warped, dtype=np.float32)
+    result = (1.0 - cache["mask_f"]) * cache["bg_arr"] + cache["mask_f"] * warped_arr
+    return Image.fromarray(result.astype(np.uint8), "RGBA")
+
+
 def embed_image(
     ppt_path: str,
     bg_path: str,

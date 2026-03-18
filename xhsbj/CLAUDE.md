@@ -93,11 +93,14 @@ class Template:
 - tasks 格式：`List[(group_name: str, file_list: List[str], templates: List[Template])]`
 - 输出目录结构：`output_dir/group_name/template_name/1.png, 2.png, ...`
 - 输出尺寸来自 `template.output_width/height`（不再有全局尺寸参数）
+- **速度优化**：每个模板调用一次 `precompute_template_cache(bg_img, points)` 预计算 mask 和背景数组，再对所有图片调用 `embed_image_pil_fast(ppt_img, cache)`，避免重复计算
 
 ### VideoRunner(QThread)
 - tasks 格式：`List[(video_path: str, templates: List[Template])]`
 - **逻辑**：视频每帧 = PPT 内容（嵌入目标），模板背景图 = 场景（接收画面）
 - 使用 PyAV 重编码：libx264 视频 + AAC 音频
+- **速度优化**：同一模板的 mask、背景数组、透视系数（按帧尺寸懒缓存）只计算一次，复用到每一帧
+- **编码预设**：`preset=veryfast`（比 fast 快约 30-50%，画质无明显损失）
 - **PTS 修复**：视频用帧计数器 `out_frame.pts = frame_i`；音频用样本计数器 `resampled.pts = audio_pts; audio_pts += resampled.samples`
 - 音频用 `av.AudioResampler(format="fltp", layout, rate)` 转格式后编 AAC
 
@@ -184,6 +187,9 @@ _RED   = "#FA5151"   # 危险色
 - [x] `同步到GitHub.command` 一键脚本：本地打包 Mac + push 代码 + 上传 Release（需 `gh` CLI）
 - [x] 软件改名为「融景」
 - [x] 模板存储迁移到系统级持久目录（Mac: `~/Library/Application Support/融景/templates/`，Windows: `%APPDATA%\融景\templates\`），更新 app 不丢数据
+- [x] 批量/视频处理速度优化（`precompute_template_cache` + `embed_image_pil_fast`，mask/背景/透视系数按模板预计算复用）
+- [x] Windows 黑色背景修复（补 `QTabWidget { background }` 全局规则；对话框去掉 no-selector `setStyleSheet`，改用 object name；补 `QDialogButtonBox { background }` 规则）
+- [x] Windows 软件名称改为「融景」（build.yml 同步更新）
 
 ---
 

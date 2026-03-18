@@ -153,8 +153,9 @@ QListWidget::item:selected {{ background: rgba(7,193,96,0.15); color: {_GREEN}; 
 QListWidget::item:hover:!selected {{ background: rgba(0,0,0,0.04); }}
 
 /* ── Tabs ── */
-QTabWidget::pane {{ border: none; background: {_WIN}; }}
-QTabBar {{ background: {_CARD}; border-bottom: 1px solid {_SEP}; }}
+QTabWidget         {{ background: {_WIN}; }}
+QTabWidget::pane   {{ border: none; background: {_WIN}; }}
+QTabBar            {{ background: {_CARD}; border-bottom: 1px solid {_SEP}; }}
 QTabBar::tab {{
     background: transparent; padding: 13px 28px;
     color: {_TEXT2}; font-size: 13px; font-weight: 500;
@@ -294,19 +295,20 @@ class TemplatePickerDialog(QDialog):
         self.setMinimumWidth(340)
         self.setMinimumHeight(280)
         self.setStyleSheet(f"""
-            QDialog {{ background: {_CARD}; }}
-            QWidget {{ background: transparent; color: {_TEXT}; font-size: 13px; }}
-            QLabel {{ color: {_TEXT}; }}
+            QDialog {{ background: {_CARD}; color: {_TEXT}; font-size: 13px; }}
+            QLabel {{ background: transparent; color: {_TEXT}; }}
             QScrollArea {{ background: {_INPUT}; border-radius: 8px; border: none; }}
+            QWidget#scroll_inner {{ background: {_CARD}; }}
             QScrollBar:vertical {{ background: transparent; width: 6px; }}
             QScrollBar::handle {{ background: rgba(0,0,0,0.15); border-radius: 3px; }}
             QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
-            QCheckBox {{ color: {_TEXT}; spacing: 8px; }}
+            QCheckBox {{ background: transparent; color: {_TEXT}; spacing: 8px; }}
             QCheckBox::indicator {{
                 width: 18px; height: 18px; border-radius: 4px;
                 border: 2px solid {_SEP}; background: {_CARD};
             }}
             QCheckBox::indicator:checked {{ background: {_GREEN}; border-color: {_GREEN}; }}
+            QDialogButtonBox {{ background: {_CARD}; }}
             QPushButton {{
                 background: {_INPUT}; color: {_TEXT}; border: 1px solid {_SEP};
                 border-radius: 8px; padding: 8px 16px; font-size: 13px;
@@ -333,7 +335,7 @@ class TemplatePickerDialog(QDialog):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         inner = QWidget()
-        inner.setStyleSheet(f"background: {_CARD};")
+        inner.setObjectName("scroll_inner")
         iv = QVBoxLayout(inner)
         iv.setContentsMargins(8, 8, 8, 8)
         iv.setSpacing(8)

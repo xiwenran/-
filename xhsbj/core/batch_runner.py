@@ -3,8 +3,10 @@ from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from PIL import Image
+
 from models.template_model import Template
-from core.image_processor import embed_image
+from core.image_processor import embed_image_pil_fast, precompute_template_cache
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".wmv"}
@@ -59,6 +61,10 @@ class BatchRunner(QThread):
                         if template.output_width > 0 else None
                     )
 
+                    # Precompute mask + bg array once per template (shared across all files)
+                    bg_img = Image.open(template.background_path)
+                    cache = precompute_template_cache(bg_img, template.screen_points)
+
                     for i, img_path in enumerate(files, 1):
                         if self._abort:
                             self.finished.emit(False, "已取消"); return
@@ -66,12 +72,11 @@ class BatchRunner(QThread):
                         ext = ".jpg" if self.output_format == "JPEG" else ".png"
                         out_path = os.path.join(out_sub, f"{i}{ext}")
 
-                        result = embed_image(
-                            img_path,
-                            template.background_path,
-                            template.screen_points,
-                            output_size,
-                        )
+                        ppt_img = Image.open(img_path)
+                        result = embed_image_pil_fast(ppt_img, cache)
+
+                        if output_size:
+                            result = result.resize(output_size, Image.LANCZOS)
 
                         if self.output_format == "JPEG":
                             result = result.convert("RGB")
@@ -109,8 +114,6 @@ class VideoRunner(QThread):
 
     def run(self):
         import av
-        from PIL import Image
-        from core.image_processor import embed_image_pil
 
         try:
             os.makedirs(self.output_dir, exist_ok=True)
@@ -137,8 +140,10 @@ class VideoRunner(QThread):
                     if self._abort:
                         self.finished.emit(False, "已取消"); return
 
+                    # Precompute mask + bg array once per template (reused for every frame)
                     bg_img = Image.open(template.background_path).convert("RGBA")
-                    bg_w, bg_h = bg_img.size
+                    cache = precompute_template_cache(bg_img, template.screen_points)
+                    bg_w, bg_h = cache["bg_size"]
 
                     out_dir = os.path.join(self.output_dir, vid_name, template.name)
                     os.makedirs(out_dir, exist_ok=True)
@@ -152,7 +157,7 @@ class VideoRunner(QThread):
                         out_vs.width = bg_w
                         out_vs.height = bg_h
                         out_vs.pix_fmt = "yuv420p"
-                        out_vs.options = {"crf": "18", "preset": "fast"}
+                        out_vs.options = {"crf": "18", "preset": "veryfast"}
 
                         # Output audio streams (AAC re-encode) + resamplers for format conversion
                         out_as_list = []
@@ -182,7 +187,7 @@ class VideoRunner(QThread):
                             if packet.stream == in_vs:
                                 for frame in packet.decode():
                                     pil = frame.to_image().convert("RGBA")
-                                    result = embed_image_pil(pil, bg_img, template.screen_points)
+                                    result = embed_image_pil_fast(pil, cache)
                                     out_frame = av.VideoFrame.from_image(result.convert("RGB"))
                                     # Use sequential frame counter; out_vs.codec_context.time_base
                                     # is 1/fps so pts=frame_i gives correct duration.
