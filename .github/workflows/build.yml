@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write   # 允许上传到 GitHub Releases
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -44,7 +47,21 @@ jobs:
         run: Compress-Archive -Path "dist\融景" -DestinationPath "dist\融景_windows_x64.zip"
         shell: pwsh
 
-      - name: 上传 Windows 安装包
+      - name: 上传到 GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 找到最新 Release（由 Mac 同步脚本创建），把 Windows 包附加上去
+          $tag = gh release list --repo xiwenran/- --limit 1 --json tagName --jq '.[0].tagName' 2>$null
+          if ($tag) {
+            gh release upload $tag "dist\融景_windows_x64.zip" --repo xiwenran/- --clobber
+            Write-Host "已附加到 Release $tag"
+          } else {
+            Write-Host "未找到 Release，跳过（可在 Actions 页面手动下载 Artifact）"
+          }
+        shell: pwsh
+
+      - name: 保留 Artifact 备份
         uses: actions/upload-artifact@v4
         with:
           name: 融景_windows_x64

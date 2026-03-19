@@ -93,13 +93,16 @@ class Template:
 - tasks 格式：`List[(group_name: str, file_list: List[str], templates: List[Template])]`
 - 输出目录结构：`output_dir/group_name/template_name/1.png, 2.png, ...`
 - 输出尺寸来自 `template.output_width/height`（不再有全局尺寸参数）
-- **速度优化**：每个模板调用一次 `precompute_template_cache(bg_img, points)` 预计算 mask 和背景数组，再对所有图片调用 `embed_image_pil_fast(ppt_img, cache)`，避免重复计算
+- **速度优化**：每个模板调用一次 `precompute_template_cache(bg_img, points)` 预计算 mask 和背景数组（RGB，3通道），再对所有图片调用 `embed_image_pil_fast(ppt_img, cache)`，避免重复计算；使用 BILINEAR 替代 BICUBIC 插值（2-3× 速度提升）
 
 ### VideoRunner(QThread)
 - tasks 格式：`List[(video_path: str, templates: List[Template])]`
 - **逻辑**：视频每帧 = PPT 内容（嵌入目标），模板背景图 = 场景（接收画面）
 - 使用 PyAV 重编码：libx264 视频 + AAC 音频
-- **速度优化**：同一模板的 mask、背景数组、透视系数（按帧尺寸懒缓存）只计算一次，复用到每一帧
+- **速度优化（多重）**：
+  - `precompute_template_cache(..., ppt_size=(w,h))` 在视频开始前预计算透视系数（利用流元数据获取帧尺寸），使 cache 完全只读，线程安全
+  - `embed_image_pil_fast` 使用 RGB 3通道 + BILINEAR 插值（比 BICUBIC RGBA 快约 3-4×）
+  - `ThreadPoolExecutor(max_workers=N-1)` 并行处理视频帧：PIL/numpy C 代码释放 GIL，多线程可真正并行；使用滑动窗口（`deque` 最多 `num_workers*2` 帧在飞）保证按顺序编码，音频仍串行处理以保持同步
 - **编码预设**：`preset=veryfast`（比 fast 快约 30-50%，画质无明显损失）
 - **PTS 修复**：视频用帧计数器 `out_frame.pts = frame_i`；音频用样本计数器 `resampled.pts = audio_pts; audio_pts += resampled.samples`
 - 音频用 `av.AudioResampler(format="fltp", layout, rate)` 转格式后编 AAC
@@ -188,8 +191,12 @@ _RED   = "#FA5151"   # 危险色
 - [x] 软件改名为「融景」
 - [x] 模板存储迁移到系统级持久目录（Mac: `~/Library/Application Support/融景/templates/`，Windows: `%APPDATA%\融景\templates\`），更新 app 不丢数据
 - [x] 批量/视频处理速度优化（`precompute_template_cache` + `embed_image_pil_fast`，mask/背景/透视系数按模板预计算复用）
-- [x] Windows 黑色背景修复（补 `QTabWidget { background }` 全局规则；对话框去掉 no-selector `setStyleSheet`，改用 object name；补 `QDialogButtonBox { background }` 规则）
+- [x] Windows 黑色对话框按钮区修复（去掉 no-selector `setStyleSheet`；补 `QDialogButtonBox { background }` 规则）
+- [x] Windows 黑色 tab bar 修复（QTabWidget 使用 QPalette + setAutoFillBackground，绕开 CSS transparent 渲染问题）
+- [x] 侧边栏改为 QScrollArea（表单内容可滚动，「保存模板」和「清除数据」按钮固定在底部），解决小屏下模板列表只显示 1 条的问题
 - [x] Windows 软件名称改为「融景」（build.yml 同步更新）
+- [x] 按钮改为胶囊/圆角形状（QPushButton `border-radius:18px`，#primary `22px`，#scan `18px`，modeBtn `22px`，Python setStyleSheet 也同步更新）
+- [x] 卡片区块视觉区分（QWidget#card 渐变背景 + border-radius:16px；QLabel#h2 绿色左边框 border-left）
 
 ---
 
@@ -204,7 +211,9 @@ _RED   = "#FA5151"   # 危险色
 7. **DMG 制作**：无需第三方工具，`hdiutil create -volname ... -srcfolder ... -ov -format UDZO -output xxx.dmg` 即可。先用 `xattr -cr app` 移除本机测试的隔离属性，但分发时建议告知用户右键打开流程。
 8. **视频 PTS 根本原因**：libx264 编码器 time_base = 1/fps，`out_frame.pts = frame_i`（整数帧号）恰好对应正确时长。若直接复制输入 pts（time_base ≈ 1/90000），则时长会虚增约 90000/fps 倍，导致 1 分钟视频变 1 小时。
 9. **cv2 在 PyInstaller 中的 bootstrap 递归**：opencv-python 的 `__init__.py` 调用 `importlib.import_module("cv2")` 时在冻结环境中触发递归。已彻底移除 cv2，用 PIL `Image.PERSPECTIVE` + `ImageDraw.polygon` + `ImageFilter.MinFilter/GaussianBlur` 替代，质量相当。
-10. **macOS 26 Tahoe beta 兼容性**：GitHub Actions 用 macOS 14/15 编译的 PyQt6 在 macOS 26 上 PAC 签名校验失败崩溃。解决方案：Mac 版本在本机用 `bash build_app.sh` 打包，Windows 版本用 GitHub Actions 打包。
+10. **Windows QTabWidget 黑色 tab bar**：`QWidget { background: transparent }` 会导致 Windows 上 tab bar 右侧空白区域渲染为黑色。解决方案：在 `_build_ui()` 里对 `self.tabs` 调用 `QPalette + setAutoFillBackground(True)`，直接设定背景色，绕过 CSS 系统。
+11. **侧边栏布局压缩**：侧边栏使用单一 QVBoxLayout 时，在小屏幕（1366×768）上表单内容超出高度，addStretch 收缩为零，模板列表被压到最小高度只显示 1 条。解决方案：将表单内容放入 QScrollArea，「保存/卸载」按钮固定在 QScrollArea 下方（不参与滚动）。
+12. **macOS 26 Tahoe beta 兼容性**：GitHub Actions 用 macOS 14/15 编译的 PyQt6 在 macOS 26 上 PAC 签名校验失败崩溃。解决方案：Mac 版本在本机用 `bash build_app.sh` 打包，Windows 版本用 GitHub Actions 打包。
 11. **模板数据目录**：`main.py` 中 `get_data_dir()` 返回系统级目录，与 app bundle 完全分离。旧版模板在 `xhsbj/templates/`，已手动迁移到新位置。
 
 ---

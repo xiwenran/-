@@ -1,4 +1,6 @@
 import os
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -115,6 +117,10 @@ class VideoRunner(QThread):
     def run(self):
         import av
 
+        # Use N-1 CPU cores for frame processing; leave one for decode/encode I/O.
+        # PIL's C code and numpy release the GIL, so threads give real parallelism.
+        num_workers = max(1, min(6, (os.cpu_count() or 2) - 1))
+
         try:
             os.makedirs(self.output_dir, exist_ok=True)
 
@@ -126,11 +132,12 @@ class VideoRunner(QThread):
                     vs = c.streams.video[0]
                     n = vs.frames if vs.frames else 0
                     fps = float(vs.average_rate or 25)
-                meta.append((n, fps))
+                    ppt_size = (vs.width, vs.height) if vs.width and vs.height else None
+                meta.append((n, fps, ppt_size))
                 total += max(n, 1) * len(templates)
 
             done = 0
-            for (video_path, templates), (n_frames, fps) in zip(self.tasks, meta):
+            for (video_path, templates), (n_frames, fps, ppt_size) in zip(self.tasks, meta):
                 if self._abort:
                     self.finished.emit(False, "已取消"); return
 
@@ -140,16 +147,23 @@ class VideoRunner(QThread):
                     if self._abort:
                         self.finished.emit(False, "已取消"); return
 
-                    # Precompute mask + bg array once per template (reused for every frame)
-                    bg_img = Image.open(template.background_path).convert("RGBA")
-                    cache = precompute_template_cache(bg_img, template.screen_points)
+                    # Precompute mask + bg (RGB) + perspective coefficients once per template.
+                    # Passing ppt_size pre-populates _coeffs so the cache is read-only
+                    # during parallel use — no locking required.
+                    bg_img = Image.open(template.background_path).convert("RGB")
+                    cache = precompute_template_cache(
+                        bg_img, template.screen_points, ppt_size=ppt_size
+                    )
                     bg_w, bg_h = cache["bg_size"]
 
                     out_dir = os.path.join(self.output_dir, vid_name, template.name)
                     os.makedirs(out_dir, exist_ok=True)
                     out_path = os.path.join(out_dir, f"{vid_name}.mp4")
 
-                    with av.open(video_path) as inp, av.open(out_path, "w", format="mp4") as outp:
+                    with av.open(video_path) as inp, \
+                         av.open(out_path, "w", format="mp4") as outp, \
+                         ThreadPoolExecutor(max_workers=num_workers) as pool:
+
                         in_vs = inp.streams.video[0]
 
                         # Output video stream (H.264)
@@ -159,7 +173,7 @@ class VideoRunner(QThread):
                         out_vs.pix_fmt = "yuv420p"
                         out_vs.options = {"crf": "18", "preset": "veryfast"}
 
-                        # Output audio streams (AAC re-encode) + resamplers for format conversion
+                        # Output audio streams (AAC re-encode)
                         out_as_list = []
                         resamplers = []
                         for in_as in inp.streams.audio:
@@ -175,8 +189,30 @@ class VideoRunner(QThread):
                         streams = [in_vs] + list(inp.streams.audio)
                         in_audio_list = list(inp.streams.audio)
                         frame_i = 0
-                        # Per-audio-stream sample counter for correct PTS
                         audio_pts = [0] * len(out_as_list)
+
+                        # Sliding window of in-flight futures: deque of (frame_i, Future).
+                        # We keep at most num_workers*2 frames in flight so memory stays
+                        # bounded, then drain from the front (in order) to encode.
+                        pending: deque = deque()
+                        window = num_workers * 2
+
+                        def _drain(max_pending: int):
+                            """Encode completed futures from the front, keeping ≤ max_pending."""
+                            nonlocal done
+                            while len(pending) > max_pending:
+                                fi, fut = pending.popleft()
+                                rgb_result = fut.result()   # blocks until this frame is ready
+                                out_frame = av.VideoFrame.from_image(rgb_result)
+                                out_frame.pts = fi
+                                for p in out_vs.encode(out_frame):
+                                    outp.mux(p)
+                                done += 1
+                                if fi % 30 == 0 or fi == 1:
+                                    self.progress.emit(
+                                        done, total,
+                                        f"{vid_name}/{template.name}  {fi}/{n_frames} 帧"
+                                    )
 
                         for packet in inp.demux(*streams):
                             if self._abort:
@@ -186,29 +222,24 @@ class VideoRunner(QThread):
 
                             if packet.stream == in_vs:
                                 for frame in packet.decode():
-                                    pil = frame.to_image().convert("RGBA")
-                                    result = embed_image_pil_fast(pil, cache)
-                                    out_frame = av.VideoFrame.from_image(result.convert("RGB"))
-                                    # Use sequential frame counter; out_vs.codec_context.time_base
-                                    # is 1/fps so pts=frame_i gives correct duration.
-                                    out_frame.pts = frame_i
-                                    for p in out_vs.encode(out_frame):
-                                        outp.mux(p)
+                                    pil = frame.to_image().convert("RGB")
+                                    fut = pool.submit(embed_image_pil_fast, pil, cache)
+                                    pending.append((frame_i, fut))
                                     frame_i += 1
-                                    done += 1
-                                    if frame_i % 30 == 0 or frame_i == 1:
-                                        self.progress.emit(done, total,
-                                            f"{vid_name}/{template.name}  {frame_i}/{n_frames} 帧")
+                                    _drain(window)   # keep window bounded
+
                             elif packet.stream in in_audio_list:
                                 idx = in_audio_list.index(packet.stream)
                                 if idx < len(out_as_list):
                                     for frame in packet.decode():
                                         for resampled in resamplers[idx].resample(frame):
-                                            # Use sample count as PTS (audio time_base = 1/sample_rate)
                                             resampled.pts = audio_pts[idx]
                                             audio_pts[idx] += resampled.samples
                                             for p in out_as_list[idx].encode(resampled):
                                                 outp.mux(p)
+
+                        # Flush all remaining video futures in order
+                        _drain(0)
 
                         # Flush video encoder
                         for p in out_vs.encode():

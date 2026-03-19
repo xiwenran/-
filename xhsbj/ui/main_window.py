@@ -36,28 +36,34 @@ QWidget      {{ background: transparent; color: {_TEXT}; font-size: 13px; }}
 
 /* ── Containers ── */
 QWidget#sidebar {{ background: {_SIDE}; }}
-QWidget#card    {{ background: {_CARD}; border-radius: 12px; border: 1px solid {_SEP}; }}
-QWidget#inset   {{ background: {_WIN};  border-radius: 8px; border: 1px solid {_SEP}; }}
+QWidget#card    {{
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 {_CARD}, stop:1 #F8F8F8);
+    border-radius: 16px; border: 1px solid {_SEP};
+}}
+QWidget#inset   {{ background: {_WIN};  border-radius: 10px; border: 1px solid {_SEP}; }}
 
 /* ── Typography ── */
 QLabel {{ background: transparent; color: {_TEXT}; }}
-QLabel#h2     {{ font-size: 15px; font-weight: 600; }}
+QLabel#h2  {{
+    font-size: 15px; font-weight: 700;
+    border-left: 3px solid {_GREEN}; padding-left: 8px;
+}}
 QLabel#cap    {{ color: {_TEXT2}; font-size: 11px; font-weight: 500; }}
 QLabel#hint   {{ color: {_TEXT2}; font-size: 12px; }}
 QLabel#badge  {{
     background: rgba(0,0,0,0.05);
     color: {_TEXT2}; font-size: 12px; font-weight: 500;
-    padding: 3px 10px; border-radius: 6px;
+    padding: 3px 10px; border-radius: 10px;
 }}
 QLabel#badge_ok {{
     background: rgba(7,193,96,0.12);
     color: {_GREEN}; font-size: 12px; font-weight: 600;
-    padding: 3px 10px; border-radius: 6px;
+    padding: 3px 10px; border-radius: 10px;
 }}
 QLabel#step_n  {{
     background: {_GREEN}; color: white;
     font-size: 12px; font-weight: 700;
-    padding: 4px 11px; border-radius: 12px;
+    padding: 4px 12px; border-radius: 14px;
 }}
 QLabel#step_t  {{ font-size: 17px; font-weight: 700; color: {_TEXT}; }}
 QLabel#card_title {{ font-size: 15px; font-weight: 600; color: {_TEXT}; }}
@@ -103,7 +109,7 @@ QMessageBox QPushButton {{
 
 /* ── Buttons ── */
 QPushButton {{
-    background: {_INPUT}; border: none; border-radius: 8px;
+    background: {_INPUT}; border: none; border-radius: 18px;
     padding: 8px 16px; color: {_TEXT}; font-weight: 500;
 }}
 QPushButton:hover   {{ background: #E5E5E5; }}
@@ -112,7 +118,7 @@ QPushButton:disabled {{ color: {_TEXT3}; }}
 
 QPushButton#primary {{
     background: {_GREEN}; color: white;
-    font-weight: 600; font-size: 14px; border-radius: 10px;
+    font-weight: 600; font-size: 14px; border-radius: 22px;
 }}
 QPushButton#primary:hover   {{ background: #06AD56; }}
 QPushButton#primary:pressed {{ background: #05994B; }}
@@ -131,13 +137,13 @@ QPushButton#ghost:hover {{ color: {_TEXT}; background: {_INPUT}; }}
 QPushButton#scan {{
     background: rgba(7,193,96,0.10); color: {_GREEN};
     border: 1px solid rgba(7,193,96,0.35);
-    font-weight: 600;
+    font-weight: 600; border-radius: 18px;
 }}
 QPushButton#scan:hover {{ background: rgba(7,193,96,0.18); }}
 
 /* ── Mode buttons — styled via Python setStyleSheet() per state ── */
 QPushButton#modeBtn {{
-    border: none; border-radius: 8px; padding: 10px 0px; font-size: 14px;
+    border: none; border-radius: 22px; padding: 10px 0px; font-size: 14px;
 }}
 
 /* ── List ── */
@@ -431,6 +437,14 @@ class MainWindow(QMainWindow):
         lv.setContentsMargins(0, 0, 0, 0); lv.setSpacing(0)
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.TabPosition.North)
+        # On Windows, CSS background:transparent renders as black in the tab bar's
+        # empty area to the right of the last tab.  Setting the palette directly
+        # guarantees the background is painted before any stylesheet kicks in.
+        from PyQt6.QtGui import QPalette, QColor as _QColor
+        _pal = self.tabs.palette()
+        _pal.setColor(QPalette.ColorRole.Window, _QColor(_CARD))
+        self.tabs.setPalette(_pal)
+        self.tabs.setAutoFillBackground(True)
         lv.addWidget(self.tabs)
         self.tabs.addTab(self._build_editor_tab(), "  模板配置  ")
         self.tabs.addTab(self._build_batch_tab(),  "  批量导出  ")
@@ -446,60 +460,70 @@ class MainWindow(QMainWindow):
         sidebar = QWidget(); sidebar.setObjectName("sidebar"); sidebar.setFixedWidth(420)
         sidebar.setStyleSheet(f"QWidget#sidebar{{background:{_SIDE};border-right:1px solid {_SEP};}}")
         sv = QVBoxLayout(sidebar)
-        sv.setContentsMargins(14, 16, 14, 16); sv.setSpacing(0)
+        sv.setContentsMargins(0, 0, 0, 0); sv.setSpacing(0)
+
+        # ── Scrollable form content ────────────────────────────────────────────
+        sb_scroll = QScrollArea()
+        sb_scroll.setWidgetResizable(True)
+        sb_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        sb_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        form = QWidget()
+        fv = QVBoxLayout(form)
+        fv.setContentsMargins(14, 16, 14, 16); fv.setSpacing(0)
 
         # Section: template library
-        sv.addWidget(_lbl("模板库", "h2"))
-        sv.addSpacing(10)
+        fv.addWidget(_lbl("模板库", "h2"))
+        fv.addSpacing(10)
 
         self.template_list = QListWidget()
-        self.template_list.setMinimumHeight(130)
+        self.template_list.setMinimumHeight(90)
+        self.template_list.setMaximumHeight(200)
         self.template_list.currentRowChanged.connect(self._on_template_selected)
-        sv.addWidget(self.template_list)
-        sv.addSpacing(8)
+        fv.addWidget(self.template_list)
+        fv.addSpacing(8)
 
         tpl_row = _row(_btn("+ 新建", self._new_template), _btn("删除", self._delete_template, "danger"))
-        sv.addLayout(tpl_row)
-        sv.addSpacing(16)
-        sv.addWidget(_sep())
-        sv.addSpacing(14)
+        fv.addLayout(tpl_row)
+        fv.addSpacing(16)
+        fv.addWidget(_sep())
+        fv.addSpacing(14)
 
         # Section: scene settings
-        sv.addWidget(_lbl("场景配置", "h2"))
-        sv.addSpacing(10)
+        fv.addWidget(_lbl("场景配置", "h2"))
+        fv.addSpacing(10)
 
         # Name
-        sv.addWidget(_lbl("名称", "cap"))
-        sv.addSpacing(4)
+        fv.addWidget(_lbl("名称", "cap"))
+        fv.addSpacing(4)
         self.tpl_name_edit = QLineEdit(); self.tpl_name_edit.setPlaceholderText("模板名称…")
-        sv.addWidget(self.tpl_name_edit)
-        sv.addSpacing(10)
+        fv.addWidget(self.tpl_name_edit)
+        fv.addSpacing(10)
 
         # Background
-        sv.addWidget(_lbl("背景图片", "cap"))
-        sv.addSpacing(4)
+        fv.addWidget(_lbl("背景图片", "cap"))
+        fv.addSpacing(4)
         self.bg_path_edit = QLineEdit(); self.bg_path_edit.setReadOnly(True)
         self.bg_path_edit.setPlaceholderText("点击选择背景图片")
         btn_bg = _btn("选择", self._load_background, w=64)
         bg_row = _row(self.bg_path_edit, btn_bg, spacing=6)
-        sv.addLayout(bg_row)
-        sv.addSpacing(10)
+        fv.addLayout(bg_row)
+        fv.addSpacing(10)
 
         # Points
-        sv.addWidget(_lbl("屏幕角点", "cap"))
-        sv.addSpacing(4)
+        fv.addWidget(_lbl("屏幕角点", "cap"))
+        fv.addSpacing(4)
         self.points_badge = _lbl("0 / 4 个角点", "badge")
-        sv.addLayout(_row(self.points_badge, None, _btn("清除", self._clear_points, "ghost")))
-        sv.addSpacing(10)
+        fv.addLayout(_row(self.points_badge, None, _btn("清除", self._clear_points, "ghost")))
+        fv.addSpacing(10)
 
         # Output size
-        sv.addWidget(_lbl("输出尺寸", "cap"))
-        sv.addSpacing(4)
+        fv.addWidget(_lbl("输出尺寸", "cap"))
+        fv.addSpacing(4)
         self.output_size_combo = QComboBox()
         for lbl in OUTPUT_PRESETS: self.output_size_combo.addItem(lbl)
         self.output_size_combo.currentTextChanged.connect(
             lambda t: self.custom_size_widget.setVisible(t == "自定义..."))
-        sv.addWidget(self.output_size_combo)
+        fv.addWidget(self.output_size_combo)
 
         cw = QWidget()
         cl = QHBoxLayout(cw); cl.setContentsMargins(0, 4, 0, 0); cl.setSpacing(6)
@@ -508,46 +532,56 @@ class MainWindow(QMainWindow):
         cl.addWidget(_lbl("W")); cl.addWidget(self.custom_w)
         cl.addWidget(_lbl("H")); cl.addWidget(self.custom_h)
         self.custom_size_widget = cw; cw.hide()
-        sv.addWidget(cw)
-        sv.addSpacing(16)
-        sv.addWidget(_sep())
-        sv.addSpacing(14)
+        fv.addWidget(cw)
+        fv.addSpacing(16)
+        fv.addWidget(_sep())
+        fv.addSpacing(14)
 
         # Section: preview
-        sv.addWidget(_lbl("嵌入预览（可选）", "h2"))
-        sv.addSpacing(6)
+        fv.addWidget(_lbl("嵌入预览（可选）", "h2"))
+        fv.addSpacing(6)
         hint_prev = _lbl("加载一张 PPT 图片，实时查看嵌入效果", "hint")
         hint_prev.setWordWrap(True)
-        sv.addWidget(hint_prev)
-        sv.addSpacing(8)
+        fv.addWidget(hint_prev)
+        fv.addSpacing(8)
         self.preview_path_edit = QLineEdit(); self.preview_path_edit.setReadOnly(True)
         self.preview_path_edit.setPlaceholderText("未加载预览图片")
-        sv.addWidget(self.preview_path_edit)
-        sv.addSpacing(6)
-        sv.addLayout(_row(_btn("选择图片", self._load_preview), _btn("清除", self._clear_preview, "ghost")))
-        sv.addSpacing(16)
-        sv.addWidget(_sep())
-        sv.addSpacing(12)
+        fv.addWidget(self.preview_path_edit)
+        fv.addSpacing(6)
+        fv.addLayout(_row(_btn("选择图片", self._load_preview), _btn("清除", self._clear_preview, "ghost")))
+        fv.addSpacing(16)
+        fv.addWidget(_sep())
+        fv.addSpacing(12)
 
         # Hint
         hint = _lbl("左键依次点击放置 4 个角点（TL → TR → BR → BL），拖拽调整位置，右键撤销", "hint")
         hint.setWordWrap(True)
-        sv.addWidget(hint)
-        sv.addStretch()
+        fv.addWidget(hint)
+        fv.addSpacing(16)
 
+        sb_scroll.setWidget(form)
+        sv.addWidget(sb_scroll)  # scrollable area takes all available height
+
+        # ── Bottom panel: always visible (save + uninstall) ───────────────────
+        bottom = QWidget()
+        bv = QVBoxLayout(bottom)
+        bv.setContentsMargins(14, 8, 14, 10); bv.setSpacing(0)
+
+        bv.addWidget(_sep())
+        bv.addSpacing(8)
         btn_save = _btn("  保存模板", self._save_template, "primary")
         btn_save.setFixedHeight(44)
-        sv.addWidget(btn_save)
-
-        # ── Bottom: uninstall data ─────────────────────────────────────────────
-        sv.addStretch()
-        sv.addWidget(_sep())
-        sv.addSpacing(10)
+        bv.addWidget(btn_save)
+        bv.addSpacing(10)
+        bv.addWidget(_sep())
+        bv.addSpacing(8)
         uninstall_btn = QPushButton("清除所有数据（卸载前使用）")
         uninstall_btn.setObjectName("danger")
         uninstall_btn.clicked.connect(self._uninstall_data)
-        sv.addWidget(uninstall_btn)
-        sv.addSpacing(4)
+        bv.addWidget(uninstall_btn)
+        bv.addSpacing(4)
+
+        sv.addWidget(bottom)
 
         root.addWidget(sidebar)
 
@@ -854,9 +888,9 @@ class MainWindow(QMainWindow):
         for i, b in enumerate(self._mode_btns):
             b.setChecked(i == idx)
             if i == idx:
-                b.setStyleSheet(f"QPushButton {{ background:{_GREEN}; color:white; font-weight:600; font-size:14px; border:none; border-radius:8px; padding:10px 0; }}")
+                b.setStyleSheet(f"QPushButton {{ background:{_GREEN}; color:white; font-weight:600; font-size:14px; border:none; border-radius:22px; padding:10px 0; }}")
             else:
-                b.setStyleSheet(f"QPushButton {{ background:{_INPUT}; color:{_TEXT2}; font-size:14px; font-weight:500; border:none; border-radius:8px; padding:10px 0; }} QPushButton:hover {{ background:#E8E8E8; color:{_TEXT}; }}")
+                b.setStyleSheet(f"QPushButton {{ background:{_INPUT}; color:{_TEXT2}; font-size:14px; font-weight:500; border:none; border-radius:22px; padding:10px 0; }} QPushButton:hover {{ background:#E8E8E8; color:{_TEXT}; }}")
         self._c1_folder.setVisible(idx == 0)
         self._c1_image.setVisible(idx == 1)
         self._c1_video.setVisible(idx == 2)

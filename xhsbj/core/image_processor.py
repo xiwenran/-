@@ -90,6 +90,7 @@ def precompute_template_cache(
     bg_img: Image.Image,
     points: List[List[float]],
     feather: int = 2,
+    ppt_size: Optional[Tuple[int, int]] = None,
 ) -> dict:
     """Precompute mask and background array for a template.
 
@@ -97,8 +98,12 @@ def precompute_template_cache(
     embed_image_pil_fast() for each image/frame.  Avoids redundant mask
     computation when processing many images or video frames with the same
     template.
+
+    ppt_size: if provided, also pre-compute perspective coefficients for that
+    source resolution (useful for video where all frames are the same size,
+    enabling safe multi-threaded use of the cache).
     """
-    bg_img = bg_img.convert("RGBA")
+    bg_img = bg_img.convert("RGB")   # 3-channel: 25% less memory/compute than RGBA
     bg_w, bg_h = bg_img.size
     dst_pts = order_points(points).astype(np.float64)
 
@@ -114,26 +119,39 @@ def precompute_template_cache(
             np.where(mask_orig >= 128, np.array(mask), 0).astype(np.uint8)
         )
 
-    return {
-        "dst_pts":  dst_pts,
-        "bg_size":  (bg_w, bg_h),
-        "mask_f":   np.array(mask, dtype=np.float32)[:, :, np.newaxis] / 255.0,
-        "bg_arr":   np.array(bg_img, dtype=np.float32),
-        # _coeffs / _coeffs_key filled lazily on first frame of a given size
+    cache: dict = {
+        "dst_pts": dst_pts,
+        "bg_size": (bg_w, bg_h),
+        "mask_f":  np.array(mask, dtype=np.float32)[:, :, np.newaxis] / 255.0,
+        "bg_arr":  np.array(bg_img, dtype=np.float32),
     }
+
+    # Pre-compute perspective coefficients if source size is known (e.g. video).
+    # This makes the cache fully read-only during parallel use.
+    if ppt_size is not None:
+        ppt_w, ppt_h = ppt_size
+        src_pts = np.float64([[0, 0], [ppt_w, 0], [ppt_w, ppt_h], [0, ppt_h]])
+        cache["_coeffs"]     = _perspective_coeffs(src_pts, dst_pts)
+        cache["_coeffs_key"] = ppt_size
+
+    return cache
 
 
 def embed_image_pil_fast(ppt_img: Image.Image, cache: dict) -> Image.Image:
     """Embed using a precomputed template cache (see precompute_template_cache).
 
-    Coefficients are also cached inside `cache` keyed by ppt image size, so
-    consecutive calls with the same-size input (e.g. video frames or uniform
-    PPT screenshots) skip the numpy linear-solve entirely.
+    Uses BILINEAR interpolation and RGB processing (3 channels) for maximum
+    speed. Returns an RGB image.
+
+    Coefficients are lazily cached inside `cache` keyed by ppt image size.
+    When ppt_size was passed to precompute_template_cache (video case), the
+    cache is fully read-only here and safe for concurrent use in a thread pool.
     """
-    ppt_img = ppt_img.convert("RGBA")
+    ppt_img = ppt_img.convert("RGB")   # 3 channels — faster transform & blend
     ppt_w, ppt_h = ppt_img.size
 
-    # Lazily cache perspective coefficients per source resolution
+    # Lazily cache perspective coefficients per source resolution.
+    # For video (ppt_size pre-computed) this branch is never entered.
     size_key = (ppt_w, ppt_h)
     if cache.get("_coeffs_key") != size_key:
         src_pts = np.float64([[0, 0], [ppt_w, 0], [ppt_w, ppt_h], [0, ppt_h]])
@@ -141,13 +159,15 @@ def embed_image_pil_fast(ppt_img: Image.Image, cache: dict) -> Image.Image:
         cache["_coeffs_key"] = size_key
 
     bg_w, bg_h = cache["bg_size"]
+    # BILINEAR is ~2-3× faster than BICUBIC; for screen content the quality
+    # difference is imperceptible after perspective distortion.
     warped = ppt_img.transform(
-        (bg_w, bg_h), Image.PERSPECTIVE, cache["_coeffs"], Image.BICUBIC
+        (bg_w, bg_h), Image.PERSPECTIVE, cache["_coeffs"], Image.BILINEAR
     )
 
     warped_arr = np.array(warped, dtype=np.float32)
     result = (1.0 - cache["mask_f"]) * cache["bg_arr"] + cache["mask_f"] * warped_arr
-    return Image.fromarray(result.astype(np.uint8), "RGBA")
+    return Image.fromarray(result.astype(np.uint8), "RGB")
 
 
 def embed_image(
