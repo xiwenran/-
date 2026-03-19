@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QSize, QSettings
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QFont, QColor, QPainter
 
 from models.template_model import Template, TemplateManager
 from core.batch_runner import BatchRunner, VideoRunner, get_image_files
@@ -168,7 +168,7 @@ QTabWidget         {{ background: {_WIN}; }}
 QTabWidget::pane   {{ border: none; background: {_WIN}; }}
 QTabBar            {{ background: {_CARD}; border-bottom: 1px solid {_SEP}; }}
 QTabBar::tab {{
-    background: transparent; padding: 13px 28px;
+    background: {_CARD}; padding: 13px 28px;
     color: {_TEXT2}; font-size: 13px; font-weight: 500;
     border-bottom: 2px solid transparent; margin-bottom: -1px;
 }}
@@ -404,6 +404,25 @@ def _btn(text, slot=None, style="", w=None) -> QPushButton:
     return b
 
 
+# ── Tab header filler (fills the empty space right of the last tab on Windows) ─
+
+class TabHeaderFill(QWidget):
+    """Expands to fill the blank area to the right of QTabBar tabs.
+    Uses paintEvent to guarantee the background is drawn on Windows/Fusion."""
+    def __init__(self, bg_color: str, border_color: str, parent=None):
+        super().__init__(parent)
+        self._bg = QColor(bg_color)
+        self._border = QColor(border_color)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMinimumWidth(1)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), self._bg)
+        painter.setPen(self._border)
+        painter.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
+
+
 # ── Main window ───────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
@@ -460,26 +479,36 @@ class MainWindow(QMainWindow):
         lv.setContentsMargins(0, 0, 0, 0); lv.setSpacing(0)
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.TabPosition.North)
-        self._fix_bg(self.tabs, _CARD)
+        self._fix_bg(self.tabs, _WIN)
         self._fix_bg(self.tabs.tabBar(), _CARD)
 
-        # On Windows, a widget's OWN stylesheet always beats the inherited parent
-        # stylesheet, regardless of selector specificity.  Setting QTabBar background
-        # directly on self.tabs overrides the global QWidget{background:transparent}.
-        self.tabs.setStyleSheet(
-            f"QTabBar {{ background: {_CARD}; }}"
-            f"QTabWidget > QWidget {{ background: {_CARD}; }}"
-        )
-
-        # Fill the empty space to the right of the last tab (Windows shows it black)
-        corner = QWidget()
-        self._fix_bg(corner, _CARD)
-        corner.setStyleSheet(f"background: {_CARD};")
+        # TabHeaderFill expands to cover the blank area right of the last tab.
+        # Uses paintEvent self-drawing so Windows/Fusion always renders it correctly.
+        corner = TabHeaderFill(_CARD, _SEP, self.tabs)
+        corner.setMinimumHeight(self.tabs.tabBar().sizeHint().height())
         self.tabs.setCornerWidget(corner, Qt.Corner.TopRightCorner)
 
         lv.addWidget(self.tabs)
         self.tabs.addTab(self._build_editor_tab(), "  模板配置  ")
         self.tabs.addTab(self._build_batch_tab(),  "  批量导出  ")
+        self._update_tab_header_fill()
+
+    def _update_tab_header_fill(self):
+        corner = self.tabs.cornerWidget(Qt.Corner.TopRightCorner)
+        bar = self.tabs.tabBar()
+        if not corner or not bar:
+            return
+        fill_w = max(0, self.tabs.width() - bar.geometry().right() - 1)
+        corner.setFixedWidth(fill_w)
+        corner.setFixedHeight(bar.height())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._update_tab_header_fill()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_tab_header_fill()
 
     # ── Editor tab ────────────────────────────────────────────────────────────
 
