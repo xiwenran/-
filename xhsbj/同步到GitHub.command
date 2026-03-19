@@ -30,9 +30,11 @@ echo ""
 # Release 已存在，Windows Actions 运行结束后会自动 attach ZIP
 echo "▶ 步骤 3/3  同步代码到 GitHub（触发 Windows 自动打包）..."
 cd /Users/xili
-git add xhsbj/ .github/ README.md
+# 写入 release tag 文件，确保每次都有新 commit（避免 no-op push 导致 Actions 不触发）
+echo "$TAG" > RELEASE_TAG
+git add xhsbj/ .github/ README.md RELEASE_TAG
 MSG="更新 $(date '+%Y-%m-%d %H:%M')"
-git commit -m "$MSG" || echo "（没有新代码变更，跳过提交）"
+git commit -m "$MSG"
 git push
 echo ""
 
