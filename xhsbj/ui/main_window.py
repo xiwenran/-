@@ -63,7 +63,11 @@ QLabel#badge_ok {{
 QLabel#step_n  {{
     background: {_GREEN}; color: white;
     font-size: 12px; font-weight: 700;
-    padding: 4px 12px; border-radius: 14px;
+    min-width: 28px; max-width: 28px; min-height: 28px; max-height: 28px;
+    padding: 0px; border-radius: 14px;
+}}
+QWidget#tpl_list_frame {{
+    background: {_CARD}; border: 1px solid {_SEP}; border-radius: 10px;
 }}
 QLabel#step_t  {{ font-size: 17px; font-weight: 700; color: {_TEXT}; }}
 QLabel#card_title {{ font-size: 15px; font-weight: 600; color: {_TEXT}; }}
@@ -137,7 +141,7 @@ QPushButton#ghost:hover {{ color: {_TEXT}; background: {_INPUT}; }}
 QPushButton#scan {{
     background: rgba(7,193,96,0.10); color: {_GREEN};
     border: 1px solid rgba(7,193,96,0.35);
-    font-weight: 600; border-radius: 18px;
+    font-weight: 600; border-radius: 22px; min-height: 44px;
 }}
 QPushButton#scan:hover {{ background: rgba(7,193,96,0.18); }}
 
@@ -152,11 +156,12 @@ QListWidget {{
     padding: 2px; outline: none;
 }}
 QListWidget::item {{
-    padding: 9px 12px; border-radius: 8px;
-    margin: 1px 0; color: {_TEXT};
+    padding: 9px 12px; border-radius: 6px;
+    margin: 2px 4px; color: {_TEXT};
+    background: {_INPUT};
 }}
-QListWidget::item:selected {{ background: rgba(7,193,96,0.15); color: {_GREEN}; }}
-QListWidget::item:hover:!selected {{ background: rgba(0,0,0,0.04); }}
+QListWidget::item:selected {{ background: rgba(7,193,96,0.18); color: {_GREEN}; }}
+QListWidget::item:hover:!selected {{ background: #E8E8E8; }}
 
 /* ── Tabs ── */
 QTabWidget         {{ background: {_WIN}; }}
@@ -479,7 +484,10 @@ class MainWindow(QMainWindow):
         self.template_list.setMinimumHeight(90)
         self.template_list.setMaximumHeight(200)
         self.template_list.currentRowChanged.connect(self._on_template_selected)
-        fv.addWidget(self.template_list)
+        tpl_frame = QWidget(); tpl_frame.setObjectName("tpl_list_frame")
+        tfl = QVBoxLayout(tpl_frame); tfl.setContentsMargins(4, 4, 4, 4); tfl.setSpacing(0)
+        tfl.addWidget(self.template_list)
+        fv.addWidget(tpl_frame)
         fv.addSpacing(8)
 
         tpl_row = _row(_btn("+ 新建", self._new_template), _btn("删除", self._delete_template, "danger"))
@@ -678,11 +686,13 @@ class MainWindow(QMainWindow):
         self._c1_image = c1_image
         self._c1_video = c1_video
 
-        # Step 2
-        c2 = _card(_step("2", "为每个子文件夹指定场景模板"))
-        tip2 = _lbl("每行可独立选择多个模板 — 点击「选择模板」按钮切换。「全部应用」可快速统一设置所有行。", "hint")
-        tip2.setWordWrap(True)
-        c2.layout().addWidget(tip2)
+        # Step 2 — title label stored so _set_batch_mode can update text per mode
+        self._c2_title = _lbl("选择场景模板", "step_t")
+        _badge2 = _lbl("2", "step_n"); _badge2.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        c2 = _card(_row(_badge2, 4, self._c2_title, None))
+        self._c2_hint = _lbl("每行可独立选择多个模板 — 点击「选择模板」按钮切换。「全部应用」可快速统一设置所有行。", "hint")
+        self._c2_hint.setWordWrap(True)
+        c2.layout().addWidget(self._c2_hint)
 
         btn_qa = _btn("全部应用…", self._apply_all, "scan")
         c2.layout().addLayout(_row(btn_qa, None))
@@ -896,6 +906,12 @@ class MainWindow(QMainWindow):
         self._c1_video.setVisible(idx == 2)
         self._c2.setVisible(idx != 2)
         self._format_row_widget.setVisible(idx != 2)  # no format selector for video
+        # Update step 2 title/hint to match current mode
+        self._c2_title.setText("选择场景模板")
+        if idx == 0:
+            self._c2_hint.setText("每行可独立选择多个模板 — 点击「选择模板」按钮切换。「全部应用」可快速统一设置所有行。")
+        else:
+            self._c2_hint.setText("点击「选择模板」按钮选择模板，或用「全部应用」快速统一设置。")
 
     def _save_dir(self, key: str, path: str):
         """Persist a picker's last-used directory to QSettings."""

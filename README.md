@@ -1,4 +1,4 @@
-# PPT 场景合成工具
+# 融景
 
 将 PPT 截图或视频录屏，通过透视变换嵌入到实拍背景图的屏幕区域，批量生成合成图片或视频。
 
@@ -15,16 +15,19 @@
 
 ## 下载安装包
 
-每次代码更新后，GitHub Actions 自动打包，在 [Actions 页面](../../actions) 的最新任务里下载：
+前往 [**Releases 页面**](../../releases/latest) 下载最新版本：
 
-- `PPT场景合成工具_mac_arm64.dmg` — Mac（Apple Silicon M1/M2/M3）
-- `PPT场景合成工具_windows_x64.zip` — Windows（主流 x86_64 电脑）
+- `融景_arm64.dmg` — Mac（Apple Silicon M1/M2/M3）
+- `融景_x86_64.dmg` — Mac（Intel）
+- `融景_windows_x64.zip` — Windows（主流 x86_64 电脑，约 10-15 分钟后自动附加）
 
 **Mac 首次打开**：右键点击 .app → 打开 → 点击"打开"（绕过系统安全提示）
+
+**Windows 使用**：解压 ZIP，运行 `融景.exe`
 
 ## 技术栈
 
 - **界面**：PyQt6
 - **图像处理**：Pillow + NumPy（透视变换）
 - **视频处理**：PyAV（libx264 + AAC，无需安装 ffmpeg）
-- **打包**：PyInstaller + GitHub Actions 自动构建
+- **打包**：PyInstaller（Mac 本机打包 + GitHub Actions 自动构建 Windows）
