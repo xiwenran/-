@@ -439,9 +439,7 @@ class MainWindow(QMainWindow):
         from PyQt6.QtGui import QPalette, QColor as _QColor
 
         def _fix_bg(widget, color):
-            """Force a widget to paint a solid background via QPalette.
-            On Windows, CSS background:transparent renders as black;
-            setting the palette + autoFillBackground bypasses the stylesheet."""
+            """Set palette background as a fallback for Windows black-area rendering."""
             pal = widget.palette()
             for role in (QPalette.ColorRole.Window,
                          QPalette.ColorRole.Base,
@@ -450,7 +448,6 @@ class MainWindow(QMainWindow):
             widget.setPalette(pal)
             widget.setAutoFillBackground(True)
 
-        # Fix QMainWindow itself so it paints _WIN behind everything
         _fix_bg(self, _WIN)
 
         root = QWidget()
@@ -462,10 +459,15 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.TabPosition.North)
         _fix_bg(self.tabs, _CARD)
-
-        # QTabBar is an independent child widget — must be fixed separately.
-        # Without this, the area to the right of the last tab renders black.
         _fix_bg(self.tabs.tabBar(), _CARD)
+
+        # On Windows, a widget's OWN stylesheet always beats the inherited parent
+        # stylesheet, regardless of selector specificity.  Setting QTabBar background
+        # directly on self.tabs overrides the global QWidget{background:transparent}.
+        self.tabs.setStyleSheet(
+            f"QTabBar {{ background: {_CARD}; }}"
+            f"QTabWidget > QWidget {{ background: {_CARD}; }}"
+        )
 
         lv.addWidget(self.tabs)
         self.tabs.addTab(self._build_editor_tab(), "  模板配置  ")
