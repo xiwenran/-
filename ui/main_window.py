@@ -427,6 +427,17 @@ class TemplatePickerDialog(QDialog):
         return [c.text() for c in self._checks if c.isChecked()]
 
 
+def _set_green_selection(table_widget):
+    """Force green selection color via QPalette (overrides macOS system blue)."""
+    from PyQt6.QtGui import QPalette, QColor as _QC
+    pal = table_widget.palette()
+    green = _QC(7, 193, 96, 55)
+    text  = _QC(25, 25, 25)
+    for grp in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive):
+        pal.setColor(grp, QPalette.ColorRole.Highlight, green)
+        pal.setColor(grp, QPalette.ColorRole.HighlightedText, text)
+    table_widget.setPalette(pal)
+
 def _card(*items, pad=(20,18,20,18)) -> QWidget:
     w = QWidget(); w.setObjectName("card")
     v = QVBoxLayout(w); v.setContentsMargins(*pad); v.setSpacing(12)
@@ -791,7 +802,7 @@ class MainWindow(QMainWindow):
         # Folder mode
         c1_folder = QWidget(); self._fix_bg(c1_folder, _SIDE)
         ff = QVBoxLayout(c1_folder); ff.setContentsMargins(0, 0, 0, 0); ff.setSpacing(8)
-        ff.addWidget(_lbl("选择主文件夹（内含子文件夹，每个子文件夹放一组图片；若无子文件夹则直接处理根目录图片）", "hint"))
+        _h = _lbl("选择主文件夹（内含子文件夹，每个子文件夹放一组图片；若无子文件夹则直接处理根目录图片）", "hint"); _h.setWordWrap(True); ff.addWidget(_h)
         self.input_dir_edit = QLineEdit(); self.input_dir_edit.setReadOnly(True)
         self.input_dir_edit.setPlaceholderText("选择主文件夹路径…")
         ff.addLayout(_row(self.input_dir_edit, _btn("选择", self._browse_input, w=64), spacing=6))
@@ -810,7 +821,7 @@ class MainWindow(QMainWindow):
         # Video mode (hidden by default) — pick button only; table goes to right panel
         c1_video = QWidget(); self._fix_bg(c1_video, _SIDE)
         fvi = QVBoxLayout(c1_video); fvi.setContentsMargins(0, 0, 0, 0); fvi.setSpacing(8)
-        fvi.addWidget(_lbl("选择视频录制文件（如 PPT 录屏），视频每帧将被嵌入场景模板的背景图中，输出合成视频", "hint"))
+        _hv = _lbl("选择视频录制文件（如 PPT 录屏），视频每帧将被嵌入场景模板的背景图中，输出合成视频", "hint"); _hv.setWordWrap(True); fvi.addWidget(_hv)
         fvi.addWidget(_btn("选择视频文件…", self._pick_video_files, "scan"))
         c1_video.hide(); fv.addWidget(c1_video)
 
@@ -891,6 +902,7 @@ class MainWindow(QMainWindow):
         self.subfolder_table.verticalHeader().setVisible(False)
         self.subfolder_table.setMinimumHeight(200)
         self.subfolder_table.setStyleSheet(f"QTableWidget::item:selected {{ background: rgba(7,193,96,0.18); color:{_TEXT}; }}")
+        _set_green_selection(self.subfolder_table)
         tbl_wrap = QWidget(); tbl_wrap.setObjectName("inset")
         tw = QVBoxLayout(tbl_wrap); tw.setContentsMargins(0, 0, 0, 0)
         tw.addWidget(self.subfolder_table)
@@ -912,6 +924,7 @@ class MainWindow(QMainWindow):
         self.video_table.verticalHeader().setVisible(False)
         self.video_table.setMinimumHeight(200)
         self.video_table.setStyleSheet(f"QTableWidget::item:selected {{ background: rgba(7,193,96,0.18); color:{_TEXT}; }}")
+        _set_green_selection(self.video_table)
         vid_wrap = QWidget(); vid_wrap.setObjectName("inset")
         vw = QVBoxLayout(vid_wrap); vw.setContentsMargins(0, 0, 0, 0); vw.addWidget(self.video_table)
         c_video_right.layout().addWidget(vid_wrap)
