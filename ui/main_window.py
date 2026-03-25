@@ -338,8 +338,8 @@ class TemplatePickerDialog(QDialog):
     def __init__(self, all_templates, preselected=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("选择场景模板")
-        self.setMinimumWidth(340)
-        self.setMinimumHeight(280)
+        self.setMinimumWidth(480 if len(all_templates) > 6 else 340)
+        self.setMinimumHeight(300)
         self.setStyleSheet(f"""
             QDialog {{ background: {_CARD}; color: {_TEXT}; font-size: 13px; }}
             QLabel {{ background: transparent; color: {_TEXT}; }}
@@ -388,11 +388,21 @@ class TemplatePickerDialog(QDialog):
 
         self._checks: list[QCheckBox] = []
         preselected = set(preselected or [])
-        for t in all_templates:
-            cb = QCheckBox(t.name)
-            cb.setChecked(t.name in preselected)
-            iv.addWidget(cb)
-            self._checks.append(cb)
+        if len(all_templates) > 6:
+            from PyQt6.QtWidgets import QGridLayout
+            grid = QGridLayout(); grid.setSpacing(8); grid.setContentsMargins(0, 0, 0, 0)
+            iv.addLayout(grid)
+            for idx_t, t in enumerate(all_templates):
+                cb = QCheckBox(t.name)
+                cb.setChecked(t.name in preselected)
+                grid.addWidget(cb, idx_t // 2, idx_t % 2)
+                self._checks.append(cb)
+        else:
+            for t in all_templates:
+                cb = QCheckBox(t.name)
+                cb.setChecked(t.name in preselected)
+                iv.addWidget(cb)
+                self._checks.append(cb)
         iv.addStretch()
         scroll.setWidget(inner)
         lv.addWidget(scroll)
@@ -455,6 +465,7 @@ class MainWindow(QMainWindow):
         self._loaded_tpl_name: str = None   # track which template is currently loaded
         self._row_selections: dict = {}     # row index → list of template names
         self._picked_image_files = []
+        self._last_apply_all: list = []
         # Per-picker last-used directories — persisted across sessions via QSettings
         _home = os.path.expanduser("~")
         self._settings = QSettings("融景", "RongJing")
@@ -727,20 +738,12 @@ class MainWindow(QMainWindow):
         lsv = QVBoxLayout(left_side)
         lsv.setContentsMargins(0, 0, 0, 0); lsv.setSpacing(0)
 
-        # Scrollable form content
-        ls_scroll = QScrollArea(); ls_scroll.setWidgetResizable(True)
-        ls_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        ls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._fix_bg(ls_scroll, _SIDE); self._fix_bg(ls_scroll.viewport(), _SIDE)
-        self._mark_styled_bg(ls_scroll.viewport(), "editor_viewport")
-        ls_form = QWidget(); self._fix_bg(ls_form, _SIDE)
-        self._mark_styled_bg(ls_form, "editor_form")
-        fv = QVBoxLayout(ls_form)
-        fv.setContentsMargins(14, 16, 14, 16); fv.setSpacing(0)
-
-        # Mode selector (compact cards)
-        fv.addWidget(_lbl("处理模式", "h2"))
-        fv.addSpacing(10)
+        # Fixed mode header (not inside scroll area, always fully visible)
+        ls_mode_header = QWidget(); self._fix_bg(ls_mode_header, _SIDE)
+        self._mark_styled_bg(ls_mode_header, "editor_bottom")
+        lmhv = QVBoxLayout(ls_mode_header)
+        lmhv.setContentsMargins(14, 14, 14, 10); lmhv.setSpacing(8)
+        lmhv.addWidget(_lbl("处理模式", "h2"))
         mode_row = QHBoxLayout(); mode_row.setSpacing(8)
         self._mode_cards = []
         mode_data = [
@@ -765,9 +768,21 @@ class MainWindow(QMainWindow):
             card.mousePressEvent = lambda e, idx=idx_capture: self._set_batch_mode(idx)
             self._mode_cards.append(card)
             mode_row.addWidget(card)
-        fv.addLayout(mode_row)
+        lmhv.addLayout(mode_row)
         self._batch_mode = 0
-        fv.addSpacing(16); fv.addWidget(_sep()); fv.addSpacing(14)
+        lmhv.addSpacing(4); lmhv.addWidget(_sep())
+        lsv.addWidget(ls_mode_header)
+
+        # Scrollable form content (input source + output settings only)
+        ls_scroll = QScrollArea(); ls_scroll.setWidgetResizable(True)
+        ls_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        ls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._fix_bg(ls_scroll, _SIDE); self._fix_bg(ls_scroll.viewport(), _SIDE)
+        self._mark_styled_bg(ls_scroll.viewport(), "editor_viewport")
+        ls_form = QWidget(); self._fix_bg(ls_form, _SIDE)
+        self._mark_styled_bg(ls_form, "editor_form")
+        fv = QVBoxLayout(ls_form)
+        fv.setContentsMargins(14, 14, 14, 16); fv.setSpacing(0)
 
         # Input source section
         fv.addWidget(_lbl("输入来源", "h2"))
@@ -858,13 +873,11 @@ class MainWindow(QMainWindow):
         rlv.setContentsMargins(20, 20, 20, 20); rlv.setSpacing(12)
 
         # Template assignment card (folder / image modes)
-        self._c2_title = _lbl("选择场景模板", "step_t")
-        _badge2 = _lbl("2", "step_n"); _badge2.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        c2 = _card(_row(_badge2, 4, self._c2_title, None))
-        self._c2_hint = _lbl("每行可独立选择多个模板 — 点击「选择模板」按钮切换。「全部应用」可快速统一设置所有行。", "hint")
+        c2 = _card(_lbl("场景模板", "h2"))
+        self._c2_hint = _lbl("每行独立选择模板，或点「统一选模板」批量设置所有行。", "hint")
         self._c2_hint.setWordWrap(True)
         c2.layout().addWidget(self._c2_hint)
-        btn_qa = _btn("全部应用…", self._apply_all, "scan")
+        btn_qa = _btn("统一选模板…", self._apply_all, "scan")
         c2.layout().addLayout(_row(btn_qa, None))
 
         self.subfolder_table = QTableWidget(0, 3)
@@ -886,7 +899,7 @@ class MainWindow(QMainWindow):
         self._c2 = c2
 
         # Video table card (video mode, right panel)
-        c_video_right = _card(_step("2", "视频与模板"))
+        c_video_right = _card(_lbl("视频与模板", "h2"))
         c_video_right.layout().addWidget(_lbl("每行选择要嵌入的场景模板", "hint"))
         self.video_table = QTableWidget(0, 3)
         self.video_table.setHorizontalHeaderLabels(["视频文件（每帧作为 PPT 内容嵌入场景）", "时长/帧数", "场景模板"])
@@ -1093,12 +1106,11 @@ class MainWindow(QMainWindow):
         self._c2.setVisible(idx != 2)
         self._c_video_right.setVisible(idx == 2)
         self._format_row_widget.setVisible(idx != 2)  # no format selector for video
-        # Update step 2 title/hint to match current mode
-        self._c2_title.setText("选择场景模板")
+        # Update hint to match current mode
         if idx == 0:
-            self._c2_hint.setText("每行可独立选择多个模板 — 点击「选择模板」按钮切换。「全部应用」可快速统一设置所有行。")
+            self._c2_hint.setText("每行独立选择模板，或点「统一选模板」批量设置所有行。")
         else:
-            self._c2_hint.setText("点击「选择模板」按钮选择模板，或用「全部应用」快速统一设置。")
+            self._c2_hint.setText("为所有图片统一选择模板，或点「统一选模板」批量设置。")
 
     def _save_dir(self, key: str, path: str):
         """Persist a picker's last-used directory to QSettings."""
@@ -1124,8 +1136,10 @@ class MainWindow(QMainWindow):
         def label():
             sel = self._row_selections.get(row, [])
             if not sel: return "选择模板 ▾"
-            text = "、".join(sel)
-            return (text[:18] + "… ▾") if len(text) > 18 else (text + " ▾")
+            if len(sel) == 1:
+                n = sel[0]
+                return (n[:12] + "… ▾") if len(n) > 12 else (n + " ▾")
+            return f"已选 {len(sel)} 个模板 ▾"
 
         btn = QPushButton(label())
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1144,29 +1158,18 @@ class MainWindow(QMainWindow):
             if not templates:
                 QMessageBox.warning(self, "提示", "请先在「模板配置」中创建并保存场景模板"); return
             current = self._row_selections.get(row, [])
-            menu = QMenu(btn)
-            menu.setStyleSheet(f"""
-                QMenu {{ background:{_CARD}; border:1px solid {_SEP}; border-radius:10px; padding:4px; }}
-                QMenu::item {{ padding:0; background:transparent; }}
-                QCheckBox {{ padding:8px 14px; font-size:13px; color:{_TEXT}; background:transparent; spacing:8px; }}
-                QCheckBox::indicator {{ width:16px; height:16px; border-radius:4px; border:2px solid {_SEP}; background:{_CARD}; }}
-                QCheckBox::indicator:checked {{ background:{_GREEN}; border-color:{_GREEN}; }}
-            """)
-            checkboxes = []
-            for tpl in templates:
-                cb = QCheckBox(tpl.name)
-                cb.setChecked(tpl.name in current)
-                wa = QWidgetAction(menu)
-                wa.setDefaultWidget(cb)
-                menu.addAction(wa)
-                checkboxes.append(cb)
-            menu.exec(btn.mapToGlobal(QPoint(0, btn.height())))
-            self._row_selections[row] = [cb.text() for cb in checkboxes if cb.isChecked()]
-            btn.setText(label())
+            dlg = TemplatePickerDialog(templates, current, self)
+            dlg.move(btn.mapToGlobal(QPoint(0, btn.height() + 4)))
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._row_selections[row] = dlg.selected_names()
+                btn.setText(label())
+                btn.setToolTip("、".join(self._row_selections[row]))
 
         btn.clicked.connect(open_picker)
+        btn._label_fn = label
         self._row_selections[row] = list(selected_names)
         btn.setText(label())
+        btn.setToolTip("、".join(selected_names))
         return btn
 
     def _make_video_tpl_btn(self, row: int, selected_names: list) -> QPushButton:
@@ -1174,8 +1177,10 @@ class MainWindow(QMainWindow):
         def label():
             sel = self._video_row_selections.get(row, [])
             if not sel: return "选择模板 ▾"
-            text = "、".join(sel)
-            return (text[:18] + "… ▾") if len(text) > 18 else (text + " ▾")
+            if len(sel) == 1:
+                n = sel[0]
+                return (n[:12] + "… ▾") if len(n) > 12 else (n + " ▾")
+            return f"已选 {len(sel)} 个模板 ▾"
         btn = QPushButton(label())
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         btn.setStyleSheet(f"""
@@ -1192,28 +1197,17 @@ class MainWindow(QMainWindow):
             if not templates:
                 QMessageBox.warning(self, "提示", "请先在「模板配置」中创建并保存场景模板"); return
             current = self._video_row_selections.get(row, [])
-            menu = QMenu(btn)
-            menu.setStyleSheet(f"""
-                QMenu {{ background:{_CARD}; border:1px solid {_SEP}; border-radius:10px; padding:4px; }}
-                QMenu::item {{ padding:0; background:transparent; }}
-                QCheckBox {{ padding:8px 14px; font-size:13px; color:{_TEXT}; background:transparent; spacing:8px; }}
-                QCheckBox::indicator {{ width:16px; height:16px; border-radius:4px; border:2px solid {_SEP}; background:{_CARD}; }}
-                QCheckBox::indicator:checked {{ background:{_GREEN}; border-color:{_GREEN}; }}
-            """)
-            checkboxes = []
-            for tpl in templates:
-                cb = QCheckBox(tpl.name)
-                cb.setChecked(tpl.name in current)
-                wa = QWidgetAction(menu)
-                wa.setDefaultWidget(cb)
-                menu.addAction(wa)
-                checkboxes.append(cb)
-            menu.exec(btn.mapToGlobal(QPoint(0, btn.height())))
-            self._video_row_selections[row] = [cb.text() for cb in checkboxes if cb.isChecked()]
-            btn.setText(label())
+            dlg = TemplatePickerDialog(templates, current, self)
+            dlg.move(btn.mapToGlobal(QPoint(0, btn.height() + 4)))
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._video_row_selections[row] = dlg.selected_names()
+                btn.setText(label())
+                btn.setToolTip("、".join(self._video_row_selections[row]))
         btn.clicked.connect(open_picker)
+        btn._label_fn = label
         self._video_row_selections[row] = list(selected_names)
         btn.setText(label())
+        btn.setToolTip("、".join(selected_names))
         return btn
 
     def _scan_subfolders(self):
@@ -1259,18 +1253,22 @@ class MainWindow(QMainWindow):
         templates = self.tm.load_all()
         if not templates:
             QMessageBox.warning(self, "提示", "暂无模板"); return
-        current = self._row_selections.get(0, [])
-        dlg = TemplatePickerDialog(templates, current, self)
+        dlg = TemplatePickerDialog(templates, self._last_apply_all, self)
+        dlg.setWindowTitle("统一设置所有行的场景模板")
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         names = dlg.selected_names()
         if not names:
             return
+        self._last_apply_all = list(names)
         for row in range(self.subfolder_table.rowCount()):
             self._row_selections[row] = list(names)
             btn = self.subfolder_table.cellWidget(row, 2)
             if btn:
-                btn.setText(f"{len(names)} 个模板 ▾")
+                txt = (names[0][:12] + "… ▾") if len(names) == 1 and len(names[0]) > 12 else \
+                      (names[0] + " ▾") if len(names) == 1 else f"已选 {len(names)} 个模板 ▾"
+                btn.setText(txt)
+                btn.setToolTip("、".join(names))
 
     def _pick_image_files(self):
         if sys.platform == "darwin":
