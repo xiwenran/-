@@ -430,6 +430,7 @@ class TemplatePickerDialog(QDialog):
 def _set_green_selection(table_widget):
     """Force green selection by switching table to Fusion style (bypasses macOS Aqua blue)."""
     from PyQt6.QtWidgets import QStyleFactory
+    from PyQt6.QtGui import QPalette
     fusion = QStyleFactory.create("Fusion")
     if fusion:
         table_widget.setStyle(fusion)
