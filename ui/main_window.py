@@ -15,6 +15,7 @@ from PyQt6.QtGui import QFont, QColor
 
 from models.template_model import Template, TemplateManager
 from core.batch_runner import BatchRunner, VideoRunner, get_image_files, natural_sort_key
+from core.screen_detector import detect_screen_points
 from ui.canvas_widget import CanvasWidget
 
 # ── WeChat-style Light Mode palette ──────────────────────────────────────────
@@ -158,6 +159,16 @@ QPushButton#scan {{
     font-weight: 600; border-radius: 22px; min-height: 44px;
 }}
 QPushButton#scan:hover {{ background: rgba(7,193,96,0.18); }}
+
+QPushButton#autoDetect {{
+    background: {_GREEN}; color: white;
+    font-weight: 600; border-radius: 6px;
+}}
+QPushButton#autoDetect:hover {{ background: #06AD56; }}
+QPushButton#autoDetect:pressed {{ background: #05994B; }}
+QPushButton#autoDetect:disabled {{
+    background: #DCDCDC; color: {_TEXT3};
+}}
 
 /* ── Mode buttons — styled via Python setStyleSheet() per state ── */
 QPushButton#modeBtn {{
@@ -703,7 +714,9 @@ class MainWindow(QMainWindow):
         fv.addWidget(_lbl("屏幕角点", "cap"))
         fv.addSpacing(4)
         self.points_badge = _lbl("0 / 4 个角点", "badge")
-        fv.addLayout(_row(self.points_badge, None, _btn("清除", self._clear_points, "ghost")))
+        self.auto_detect_btn = _btn("🔍 自动识别", self._auto_detect_screen, "autoDetect")
+        self.auto_detect_btn.setEnabled(False)
+        fv.addLayout(_row(self.points_badge, None, self.auto_detect_btn, _btn("清除", self._clear_points, "ghost")))
         fv.addSpacing(10)
 
         # Output size
@@ -1066,6 +1079,7 @@ class MainWindow(QMainWindow):
         self._new_template()
         self.bg_path_edit.setText(first)
         self.canvas.set_background(first)
+        self._update_auto_detect_enabled()
         self._save_dir("bg", os.path.dirname(first))
 
     # ── Template management ───────────────────────────────────────────────────
@@ -1100,6 +1114,7 @@ class MainWindow(QMainWindow):
             self.points_badge.setObjectName("badge")
             self.points_badge.setStyleSheet(f"color:{_RED};")
             QMessageBox.warning(self, "背景图片丢失", f"此模板的背景图已不存在，请重新选择背景图：\n{tpl.background_path}")
+        self._update_auto_detect_enabled()
         if tpl.output_width == 0:
             self.output_size_combo.setCurrentIndex(0)
         else:
@@ -1119,6 +1134,7 @@ class MainWindow(QMainWindow):
         self.bg_path_edit.clear()
         self.preview_path_edit.clear()
         self.canvas.clear_all()
+        self._update_auto_detect_enabled()
 
     def _delete_template(self):
         item = self.template_list.currentItem()
@@ -1191,6 +1207,7 @@ class MainWindow(QMainWindow):
             self._save_dir("bg", os.path.dirname(path))
             self.bg_path_edit.setText(path)
             self.canvas.set_background(path)
+            self._update_auto_detect_enabled()
 
     def _load_preview(self):
         path = pick_image(self, "选择 PPT 预览图片", self._last_dir_preview)
@@ -1204,6 +1221,25 @@ class MainWindow(QMainWindow):
 
     def _clear_points(self):
         self.canvas.clear_points()
+
+    def _update_auto_detect_enabled(self):
+        if not hasattr(self, "auto_detect_btn"):
+            return
+        bg = self.bg_path_edit.text().strip()
+        self.auto_detect_btn.setEnabled(bool(bg and os.path.exists(bg)))
+
+    def _auto_detect_screen(self):
+        bg = self.bg_path_edit.text().strip()
+        if not bg or not os.path.exists(bg):
+            self._update_auto_detect_enabled()
+            return
+
+        points = detect_screen_points(bg)
+        if points is None:
+            QMessageBox.warning(self, "提示", "未能自动识别屏幕区域，请手动标注")
+            return
+
+        self.canvas.set_points(points)
 
     def _on_points_changed(self, points):
         n = len(points)
