@@ -4,7 +4,7 @@ import subprocess
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget,
-    QPushButton, QLabel, QLineEdit, QListWidget,
+    QPushButton, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QFileDialog, QMessageBox, QComboBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QProgressBar, QFormLayout, QSpinBox,
     QAbstractItemView, QFrame, QScrollArea, QDialog, QCheckBox, QDialogButtonBox,
@@ -470,15 +470,26 @@ def _btn(text, slot=None, style="", w=None) -> QPushButton:
 # ── Main window ───────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
-    def __init__(self, templates_dir: str, build: str = "dev"):
-        super().__init__()
+    def __init__(
+        self,
+        templates_dir: str,
+        backgrounds_dir: str | None = None,
+        collages_dir: str | None = None,
+        build: str = "dev",
+        parent=None,
+    ):
+        super().__init__(parent)
         title = "融景" if build == "dev" else f"融景  {build}"
         self.setWindowTitle(title)
         self.resize(1340, 840)
         self.setMinimumSize(960, 640)
         self.setStyleSheet(STYLE)
 
-        self.tm = TemplateManager(templates_dir)
+        self.tm = TemplateManager(templates_dir, backgrounds_dir=backgrounds_dir)
+        self._backgrounds_dir = backgrounds_dir
+        self._collages_dir = collages_dir
+        self._collage_tab = None
+        self._ai_generate_tab = None
         self._batch_runner = None
         self._loaded_tpl_name: str = None   # track which template is currently loaded
         self._row_selections: dict = {}     # row index → list of template names
@@ -545,7 +556,22 @@ class MainWindow(QMainWindow):
         nv.addWidget(app_title)
 
         self._nav_btns = []
-        nav_items = [("  📐  模板配置", 0), ("  📦  批量导出", 1)]
+        self._page_indices = {}
+        next_idx = 0
+        nav_items = [("  📐  模板配置", next_idx)]
+        self._page_indices["editor"] = next_idx
+        next_idx += 1
+        nav_items.append(("  📦  批量导出", next_idx))
+        self._page_indices["batch"] = next_idx
+        next_idx += 1
+        if self._collages_dir is not None:
+            nav_items.append(("  🧩  拼图", next_idx))
+            self._page_indices["collage"] = next_idx
+            next_idx += 1
+        if self._backgrounds_dir is not None:
+            nav_items.append(("  🎨  AI 背景", next_idx))
+            self._page_indices["ai_generate"] = next_idx
+            next_idx += 1
         for label_text, idx in nav_items:
             btn = QPushButton(label_text)
             btn.setObjectName("navBtn")
@@ -564,7 +590,9 @@ class MainWindow(QMainWindow):
         btn_settings.setCheckable(True)
         btn_settings.setFixedHeight(44)
         btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_settings.clicked.connect(lambda: self._switch_page(2))
+        settings_idx = next_idx
+        self._page_indices["settings"] = settings_idx
+        btn_settings.clicked.connect(lambda: self._switch_page(settings_idx))
         self._nav_btns.append(btn_settings)
         nv.addWidget(btn_settings)
 
@@ -576,6 +604,15 @@ class MainWindow(QMainWindow):
         self._mark_styled_bg(self.stack, "pageStack")
         self.stack.addWidget(self._build_editor_tab())
         self.stack.addWidget(self._build_batch_tab())
+        if self._collages_dir is not None:
+            from ui.collage_tab import CollageTab
+            self._collage_tab = CollageTab(collages_dir=self._collages_dir)
+            self.stack.addWidget(self._collage_tab)
+        if self._backgrounds_dir is not None:
+            from ui.ai_generate_tab import AIGenerateTab
+            self._ai_generate_tab = AIGenerateTab(backgrounds_dir=self._backgrounds_dir)
+            self._ai_generate_tab.save_finished.connect(self._on_ai_backgrounds_saved)
+            self.stack.addWidget(self._ai_generate_tab)
         self.stack.addWidget(self._build_settings_tab())
         rl.addWidget(self.stack, 1)
 
@@ -856,6 +893,10 @@ class MainWindow(QMainWindow):
         frw_layout.addWidget(_lbl("（输出尺寸使用模板中配置的规格）", "hint"))
         frw_layout.addStretch()
         fv.addWidget(self._format_row_widget)
+        fv.addSpacing(16); fv.addWidget(_sep()); fv.addSpacing(14)
+        from ui.diversify_widget import DiversifyWidget
+        self._batch_diversify = DiversifyWidget()
+        fv.addWidget(self._batch_diversify)
         fv.addStretch()
 
         ls_scroll.setWidget(ls_form)
@@ -963,6 +1004,40 @@ class MainWindow(QMainWindow):
         info_card.layout().addSpacing(4)
         lv.addWidget(info_card)
 
+        # AI background API card
+        ai_card = _card(_lbl("AI 背景图 — API 配置", "h2"))
+        ai_form = QFormLayout()
+        ai_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        ai_form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        ai_form.setHorizontalSpacing(12)
+        ai_form.setVerticalSpacing(10)
+
+        self.ai_api_key_edit = QLineEdit()
+        self.ai_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.ai_api_key_edit.setPlaceholderText("OpenAI API Key")
+        self.ai_api_key_edit.setText(str(self._settings.value("ai/api_key", "") or ""))
+
+        self.ai_base_url_edit = QLineEdit()
+        self.ai_base_url_edit.setPlaceholderText("https://api.openai.com/v1")
+        self.ai_base_url_edit.setText(str(self._settings.value("ai/base_url", "https://api.openai.com/v1") or "https://api.openai.com/v1"))
+
+        self.ai_model_edit = QLineEdit()
+        self.ai_model_edit.setPlaceholderText("gpt-image-2")
+        self.ai_model_edit.setText(str(self._settings.value("ai/model", "gpt-image-2") or "gpt-image-2"))
+
+        ai_form.addRow("API Key", self.ai_api_key_edit)
+        ai_form.addRow("Base URL", self.ai_base_url_edit)
+        ai_form.addRow("模型名", self.ai_model_edit)
+        ai_card.layout().addLayout(ai_form)
+        ai_card.layout().addWidget(_lbl("支持兼容 OpenAI Images API 的第三方中转站。", "hint"))
+        for key, edit, default in (
+            ("ai/api_key", self.ai_api_key_edit, ""),
+            ("ai/base_url", self.ai_base_url_edit, "https://api.openai.com/v1"),
+            ("ai/model", self.ai_model_edit, "gpt-image-2"),
+        ):
+            edit.editingFinished.connect(lambda k=key, e=edit, d=default: self._save_ai_setting(k, e, d))
+        lv.addWidget(ai_card)
+
         # Data management card
         data_card = _card(_lbl("数据管理", "h2"))
         data_card.layout().addWidget(_lbl("清除所有模板数据，用于卸载前清理本地存储。", "hint"))
@@ -976,16 +1051,41 @@ class MainWindow(QMainWindow):
         lv.addStretch()
         return page
 
+    def _save_ai_setting(self, key: str, edit: QLineEdit, default: str):
+        value = edit.text().strip()
+        if not value and default:
+            value = default
+            edit.setText(default)
+        self._settings.setValue(key, value)
+
+    def _on_ai_backgrounds_saved(self, saved_paths: list):
+        if not saved_paths:
+            return
+        first = saved_paths[0]
+        self._switch_page(self._page_indices.get("editor", 0))
+        self._new_template()
+        self.bg_path_edit.setText(first)
+        self.canvas.set_background(first)
+        self._save_dir("bg", os.path.dirname(first))
+
     # ── Template management ───────────────────────────────────────────────────
 
     def _refresh_template_list(self):
         self.template_list.clear()
         for t in self.tm.load_all():
-            self.template_list.addItem(t.name)
+            loaded = self.tm.load(t.name) or t
+            text = f"⚠ {loaded.name}" if loaded.is_broken else loaded.name
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, loaded.name)
+            if loaded.is_broken:
+                item.setForeground(QColor(_RED))
+                item.setToolTip("此模板的背景图已不存在，请重新选择背景图")
+            self.template_list.addItem(item)
 
     def _on_template_selected(self, row):
         if row < 0: return
-        name = self.template_list.item(row).text()
+        item = self.template_list.item(row)
+        name = item.data(Qt.ItemDataRole.UserRole) or item.text()
         tpl = self.tm.load(name)
         if not tpl: return
         self._loaded_tpl_name = name
@@ -995,7 +1095,11 @@ class MainWindow(QMainWindow):
             self.canvas.set_background(tpl.background_path)
             self.canvas.set_points(tpl.screen_points)
         else:
-            QMessageBox.warning(self, "背景图片丢失", f"找不到：\n{tpl.background_path}")
+            self.canvas.clear_all()
+            self.points_badge.setText("⚠ 此模板的背景图已不存在，请重新选择背景图")
+            self.points_badge.setObjectName("badge")
+            self.points_badge.setStyleSheet(f"color:{_RED};")
+            QMessageBox.warning(self, "背景图片丢失", f"此模板的背景图已不存在，请重新选择背景图：\n{tpl.background_path}")
         if tpl.output_width == 0:
             self.output_size_combo.setCurrentIndex(0)
         else:
@@ -1019,7 +1123,7 @@ class MainWindow(QMainWindow):
     def _delete_template(self):
         item = self.template_list.currentItem()
         if not item: return
-        name = item.text()
+        name = item.data(Qt.ItemDataRole.UserRole) or item.text()
         if QMessageBox.question(self, "确认删除", f"删除模板「{name}」？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         ) == QMessageBox.StandardButton.Yes:
@@ -1069,7 +1173,8 @@ class MainWindow(QMainWindow):
         self._loaded_tpl_name = name
         self._refresh_template_list()
         for i in range(self.template_list.count()):
-            if self.template_list.item(i).text() == name:
+            item = self.template_list.item(i)
+            if (item.data(Qt.ItemDataRole.UserRole) or item.text()) == name:
                 self.template_list.setCurrentRow(i); break
         QMessageBox.information(self, "已保存", f"模板「{name}」保存成功")
 
@@ -1124,6 +1229,7 @@ class MainWindow(QMainWindow):
         self._c2.setVisible(idx != 2)
         self._c_video_right.setVisible(idx == 2)
         self._format_row_widget.setVisible(idx != 2)  # no format selector for video
+        self._batch_diversify.setVisible(idx != 2)
         # Update hint to match current mode
         if idx == 0:
             self._c2_hint.setText("每行独立选择模板，或点「统一选模板」批量设置所有行。")
@@ -1421,7 +1527,8 @@ class MainWindow(QMainWindow):
 
         self._batch_runner = BatchRunner(
             tasks, output_dir,
-            self.format_combo.currentText()
+            self.format_combo.currentText(),
+            diversify_config=self._batch_diversify.get_config(),
         )
         self._batch_runner.progress.connect(self._on_progress)
         self._batch_runner.finished.connect(self._on_finished)

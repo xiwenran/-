@@ -33,9 +33,18 @@ def main():
     f = app.font(); f.setPointSize(13); app.setFont(f)
 
     templates_dir = os.path.join(get_data_dir(), "templates")
+    backgrounds_dir = os.path.join(get_data_dir(), "backgrounds")
+    collages_dir = os.path.join(get_data_dir(), "collages")
     os.makedirs(templates_dir, exist_ok=True)
+    os.makedirs(backgrounds_dir, exist_ok=True)
+    os.makedirs(collages_dir, exist_ok=True)
 
-    window = MainWindow(templates_dir=templates_dir, build=BUILD)
+    window = MainWindow(
+        templates_dir=templates_dir,
+        backgrounds_dir=backgrounds_dir,
+        collages_dir=collages_dir,
+        build=BUILD,
+    )
     window.show()
     sys.exit(app.exec())
 

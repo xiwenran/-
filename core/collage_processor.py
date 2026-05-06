@@ -1,0 +1,132 @@
+import math
+from typing import List, Tuple
+
+from PIL import Image, ImageColor
+
+
+def _validate_collage_args(layout: str, rows: int, cols: int, gap: int, padding: int) -> None:
+    if layout not in ("grid", "horizontal", "vertical"):
+        raise ValueError("layout must be 'grid', 'horizontal', or 'vertical'")
+    if rows < 1 or rows > 4:
+        raise ValueError("rows must be between 1 and 4")
+    if cols < 1 or cols > 6:
+        raise ValueError("cols must be between 1 and 6")
+    if gap < 0 or gap > 20:
+        raise ValueError("gap must be between 0 and 20")
+    if padding < 0 or padding > 40:
+        raise ValueError("padding must be between 0 and 40")
+
+
+def _image_aspect_ratio(images: List[Image.Image], cell_aspect_ratio: float) -> float:
+    if cell_aspect_ratio > 0:
+        return cell_aspect_ratio
+    if images:
+        width, height = images[0].size
+        if height > 0:
+            return width / height
+    return 1.0
+
+
+def _resize_center_crop(img: Image.Image, size: Tuple[int, int]) -> Image.Image:
+    cell_w, cell_h = size
+    src_w, src_h = img.size
+    scale = max(cell_w / src_w, cell_h / src_h)
+    resized_w = max(1, int(round(src_w * scale)))
+    resized_h = max(1, int(round(src_h * scale)))
+
+    resized = img.convert("RGB").resize((resized_w, resized_h), Image.LANCZOS)
+    left = max(0, (resized_w - cell_w) // 2)
+    top = max(0, (resized_h - cell_h) // 2)
+    return resized.crop((left, top, left + cell_w, top + cell_h))
+
+
+def create_collage(
+    images: List[Image.Image],
+    layout: str,
+    rows: int,
+    cols: int,
+    gap: int = 4,
+    padding: int = 0,
+    background_color: str = "#FFFFFF",
+    cell_aspect_ratio: float = 0,
+    output_width: int = 1920,
+    output_height: int = 0,
+) -> Image.Image:
+    _validate_collage_args(layout, rows, cols, gap, padding)
+    if output_width <= padding * 2 + gap * (cols - 1):
+        raise ValueError("output_width is too small for the requested collage")
+    if output_height < 0:
+        raise ValueError("output_height must be >= 0")
+
+    bg = ImageColor.getrgb(background_color)
+    aspect_ratio = _image_aspect_ratio(images, cell_aspect_ratio)
+    if aspect_ratio <= 0:
+        raise ValueError("cell_aspect_ratio must be > 0 when provided")
+
+    inner_w = output_width - padding * 2 - gap * (cols - 1)
+    cell_w = inner_w // cols
+
+    if output_height == 0:
+        cell_h = max(1, int(round(cell_w / aspect_ratio)))
+        output_height = padding * 2 + rows * cell_h + gap * (rows - 1)
+    else:
+        if output_height <= padding * 2 + gap * (rows - 1):
+            raise ValueError("output_height is too small for the requested collage")
+        inner_h = output_height - padding * 2 - gap * (rows - 1)
+        cell_h = inner_h // rows
+
+    result = Image.new("RGB", (output_width, output_height), bg)
+    total_cells = rows * cols
+
+    for idx, img in enumerate(images[:total_cells]):
+        row = idx // cols
+        col = idx % cols
+        x = padding + col * (cell_w + gap)
+        y = padding + row * (cell_h + gap)
+        cell_img = _resize_center_crop(img, (cell_w, cell_h))
+        result.paste(cell_img, (x, y))
+
+    return result
+
+
+def calculate_auto_split(
+    total_pages: int,
+    total_output_images: int,
+    cells_per_collage: int,
+) -> List[Tuple[int, int]]:
+    if total_pages <= 0 or cells_per_collage <= 0:
+        return []
+
+    if total_output_images <= 0:
+        n = math.ceil(total_pages / cells_per_collage)
+        ranges = []
+        for i in range(n):
+            start = i * cells_per_collage
+            end = min(start + cells_per_collage, total_pages)
+            ranges.append((start, end))
+        return ranges
+
+    max_capacity = total_output_images * cells_per_collage
+    used_pages = min(total_pages, max_capacity)
+
+    per_image = used_pages // total_output_images
+    remainder = used_pages % total_output_images
+
+    ranges = []
+    cursor = 0
+    for i in range(total_output_images):
+        count = per_image + (1 if i < remainder else 0)
+        ranges.append((cursor, cursor + count))
+        cursor += count
+    return ranges
+
+
+def calculate_dropped_pages(
+    total_pages: int,
+    total_output_images: int,
+    cells_per_collage: int,
+) -> int:
+    if total_output_images <= 0 or total_pages <= 0:
+        return 0
+    max_capacity = total_output_images * cells_per_collage
+    return max(0, total_pages - max_capacity)

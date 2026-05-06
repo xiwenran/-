@@ -1,4 +1,5 @@
 import os
+import random
 import re
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -39,12 +40,15 @@ class BatchRunner(QThread):
         tasks,               # List of (group_name: str, file_list: List[str], templates: List[Template])
         output_dir: str,
         output_format: str = "PNG",   # "PNG" or "JPEG"
+        diversify_config=None,
         parent=None,
     ):
         super().__init__(parent)
         self.tasks = tasks
         self.output_dir = output_dir
         self.output_format = output_format
+        self.diversify_config = diversify_config
+        self._diversify_run_seed = random.SystemRandom().getrandbits(64)
         self._abort = False
 
     def abort(self):
@@ -88,9 +92,24 @@ class BatchRunner(QThread):
                         if output_size:
                             result = result.resize(output_size, Image.LANCZOS)
 
+                        seed = None
+                        if self.diversify_config is not None and getattr(self.diversify_config, "enabled", False):
+                            from core.diversifier import diversify_image
+
+                            seed = hash((self._diversify_run_seed, template.name, group_name, i))
+                            result = diversify_image(result, self.diversify_config, seed=seed)
+
                         if self.output_format == "JPEG":
-                            result = result.convert("RGB")
-                            result.save(out_path, "JPEG", quality=95)
+                            quality = 95
+                            if seed is not None:
+                                from core.diversifier import randomize_jpeg_quality
+
+                                quality = randomize_jpeg_quality(
+                                    95,
+                                    self.diversify_config.jpeg_quality_range,
+                                    random.Random(seed),
+                                )
+                            result.convert("RGB").save(out_path, "JPEG", quality=quality)
                         else:
                             result.save(out_path, "PNG")
 

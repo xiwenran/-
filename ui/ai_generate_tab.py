@@ -1,0 +1,500 @@
+from __future__ import annotations
+
+import io
+import os
+import random
+import time
+from typing import Iterable
+
+from PIL import Image
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QPixmap
+from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
+
+from core.ai_background import (
+    AIBackgroundError,
+    AIBaseURLError,
+    AIConfig,
+    AIAuthError,
+    AINetworkError,
+    AIQuotaError,
+    AIRateLimitError,
+    generate_backgrounds,
+)
+
+
+_GREEN = "#07C160"
+_SIDE = "#EFEFEF"
+_CARD = "#FFFFFF"
+_INPUT = "#F0F0F0"
+_SEP = "#E5E5E5"
+_TEXT = "#191919"
+_TEXT2 = "#888888"
+_RED = "#FA5151"
+
+_PERSONAL_SCENES = ["教师办公桌", "家里书桌", "校园办公室", "教研室", "居家备课", "宿舍"]
+_CLASSROOM_SCENES = ["小学教室", "中学教室", "多媒体教室", "报告厅"]
+
+
+class TagButton(QPushButton):
+    state_changed = pyqtSignal(bool)
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(text, parent)
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setObjectName("tagButton")
+        self.clicked.connect(self._emit_state)
+
+    def _emit_state(self):
+        self.state_changed.emit(self.isChecked())
+
+
+class TagGroup(QWidget):
+    selection_changed = pyqtSignal(str)
+
+    def __init__(self, label: str, options: Iterable[str], parent=None):
+        super().__init__(parent)
+        self._label = label
+        self._buttons: list[TagButton] = []
+        self._build_ui()
+        self.replace_options(list(options))
+
+    def get_selection(self) -> str:
+        for btn in self._buttons:
+            if btn.isChecked():
+                return btn.text()
+        return ""
+
+    def set_selection(self, text: str):
+        current = self.get_selection()
+        found = False
+        for btn in self._buttons:
+            checked = bool(text and btn.text() == text)
+            btn.blockSignals(True)
+            btn.setChecked(checked)
+            btn.blockSignals(False)
+            found = found or checked
+        if text and not found:
+            text = ""
+        if text != current:
+            self.selection_changed.emit(text)
+
+    def random_select(self, rng: random.Random):
+        opts = self.options()
+        if opts:
+            self.set_selection(rng.choice(opts))
+
+    def replace_options(self, new_list: list[str]):
+        old = self.get_selection()
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        self._buttons = []
+        for idx, text in enumerate(new_list):
+            btn = TagButton(text)
+            btn.clicked.connect(lambda checked=False, b=btn: self._on_button_clicked(b))
+            self._buttons.append(btn)
+            self._grid.addWidget(btn, idx // 2, idx % 2)
+        if old in new_list:
+            self.set_selection(old)
+        elif old:
+            self.selection_changed.emit("")
+
+    def options(self) -> list[str]:
+        return [btn.text() for btn in self._buttons]
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        title = QLabel(self._label)
+        title.setObjectName("cap")
+        layout.addWidget(title)
+        self._grid = QGridLayout()
+        self._grid.setHorizontalSpacing(6)
+        self._grid.setVerticalSpacing(6)
+        layout.addLayout(self._grid)
+
+    def _on_button_clicked(self, button: TagButton):
+        selected = button.isChecked()
+        for btn in self._buttons:
+            if btn is not button and btn.isChecked():
+                btn.blockSignals(True)
+                btn.setChecked(False)
+                btn.blockSignals(False)
+        self.selection_changed.emit(button.text() if selected else "")
+
+
+class _ImageTile(QFrame):
+    def __init__(self, image: Image.Image, aspect_ratio: str, parent=None):
+        super().__init__(parent)
+        self._image = image
+        self._aspect_ratio = aspect_ratio
+        self.setObjectName("imageTile")
+        self.setMinimumSize(220, 160)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        layout = QGridLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(0)
+        self._label = QLabel()
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._label.setObjectName("imagePreview")
+        self._label.setScaledContents(False)
+        self._check = QCheckBox()
+        self._check.setChecked(True)
+        layout.addWidget(self._label, 0, 0)
+        layout.addWidget(self._check, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+        self._refresh_pixmap()
+
+    def is_checked(self) -> bool:
+        return self._check.isChecked()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh_pixmap()
+
+    def heightForWidth(self, width: int) -> int:
+        ratio = {"4:3": 4 / 3, "3:4": 3 / 4, "16:9": 16 / 9, "1:1": 1}.get(self._aspect_ratio, 4 / 3)
+        return max(120, int(width / ratio))
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def _refresh_pixmap(self):
+        pix = _pil_to_pixmap(self._image)
+        target = self._label.size()
+        if target.width() > 8 and target.height() > 8:
+            pix = pix.scaled(target, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        self._label.setPixmap(pix)
+
+
+class AIGenerateTab(QWidget):
+    save_finished = pyqtSignal(list)
+
+    _TRANSLATIONS = {
+        "笔记本": "a laptop computer",
+        "台式机": "a desktop monitor",
+        "希沃一体机": "a large interactive classroom display",
+        "教师办公桌": "on a teacher's office desk",
+        "家里书桌": "on a home study desk",
+        "校园办公室": "in a campus office",
+        "教研室": "in a teaching research office",
+        "居家备课": "at a home lesson-preparation desk",
+        "宿舍": "in a dorm room",
+        "小学教室": "in an elementary school classroom",
+        "中学教室": "in a middle school classroom",
+        "多媒体教室": "in a multimedia classroom",
+        "报告厅": "in an auditorium",
+        "暖色灯光": "warm ambient lighting",
+        "自然光": "natural daylight",
+        "冷白光": "cool white office lighting",
+        "柔光": "soft diffused light",
+        "偏暗氛围": "dim atmospheric lighting",
+        "正面平视": "front eye-level camera angle",
+        "略偏侧角": "slightly side camera angle",
+        "略微俯视": "slightly top-down camera angle",
+        "略微仰视": "slightly low-angle camera angle",
+        "有植物": "with a small plant on the desk",
+        "有咖啡杯": "with a coffee cup on the desk",
+        "有书本": "with books and notebooks on the desk",
+        "有小摆件": "with small desktop ornaments",
+        "极简": "minimal clean desktop",
+    }
+
+    def __init__(self, backgrounds_dir: str, parent=None):
+        super().__init__(parent)
+        self._backgrounds_dir = backgrounds_dir
+        self._images: list[Image.Image] = []
+        self._tiles: list[_ImageTile] = []
+        self._build_ui()
+        self._wire_signals()
+
+    def _build_ui(self):
+        self.setObjectName("AIGenerateTab")
+        self.setStyleSheet(
+            f"""
+            QWidget#AIGenerateTab, QWidget#ai_right_body {{ background: #F7F7F7; }}
+            QWidget#ai_sidebar, QWidget#ai_scroll_body {{ background: {_SIDE}; }}
+            QWidget#ai_sidebar {{ border-right: 1px solid {_SEP}; }}
+            QLabel#h2 {{ color: {_TEXT}; font-size: 15px; font-weight: 700; border-left: 3px solid {_GREEN}; padding-left: 8px; }}
+            QLabel#cap {{ color: {_TEXT2}; font-size: 11px; font-weight: 600; }}
+            QLabel#hint {{ color: {_TEXT2}; font-size: 12px; }}
+            QPushButton#tagButton {{
+                background: {_INPUT}; color: {_TEXT}; border: 1px solid {_SEP};
+                border-radius: 8px; padding: 7px 10px; font-weight: 600;
+            }}
+            QPushButton#tagButton:checked {{ background: {_GREEN}; color: white; border-color: {_GREEN}; }}
+            QPushButton#secondary {{
+                background: rgba(7,193,96,0.08); color: {_GREEN};
+                border: 1px dashed {_GREEN}; border-radius: 18px;
+                padding: 8px 12px; font-weight: 600;
+            }}
+            QPushButton#primary {{
+                background: {_GREEN}; color: white; border: none;
+                border-radius: 22px; padding: 10px 16px; font-weight: 700;
+            }}
+            QFrame#aiCard, QFrame#imageTile {{
+                background: {_CARD}; border: 1px solid {_SEP}; border-radius: 10px;
+            }}
+            QLabel#imagePreview {{ background: {_INPUT}; border-radius: 8px; }}
+            """
+        )
+
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._build_sidebar(), 0)
+        root.addWidget(self._build_right_panel(), 1)
+
+    def _build_sidebar(self) -> QWidget:
+        sidebar = QWidget()
+        sidebar.setObjectName("ai_sidebar")
+        sidebar.setFixedWidth(380)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        body = QWidget()
+        body.setObjectName("ai_scroll_body")
+        content = QVBoxLayout(body)
+        content.setContentsMargins(16, 18, 16, 18)
+        content.setSpacing(10)
+
+        content.addWidget(_label("AI 背景图", "h2"))
+        self._device_group = TagGroup("设备类型", ["笔记本", "台式机", "希沃一体机"])
+        self._scene_group = TagGroup("使用场景", _PERSONAL_SCENES)
+        self._light_group = TagGroup("灯光", ["暖色灯光", "自然光", "冷白光", "柔光", "偏暗氛围"])
+        self._angle_group = TagGroup("拍摄角度", ["正面平视", "略偏侧角", "略微俯视", "略微仰视"])
+        self._decor_group = TagGroup("桌面摆件", ["有植物", "有咖啡杯", "有书本", "有小摆件", "极简"])
+        self._tag_groups = [
+            self._device_group,
+            self._scene_group,
+            self._light_group,
+            self._angle_group,
+            self._decor_group,
+        ]
+        for group in self._tag_groups:
+            content.addWidget(group)
+
+        content.addWidget(_label("额外描述（可选）", "cap"))
+        self._extra_edit = QLineEdit()
+        self._extra_edit.setPlaceholderText("如：木质桌面、暖色台灯")
+        content.addWidget(self._extra_edit)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        count_box = QWidget()
+        count_layout = QVBoxLayout(count_box)
+        count_layout.setContentsMargins(0, 0, 0, 0)
+        count_layout.setSpacing(4)
+        count_layout.addWidget(_label("生成数量", "cap"))
+        self._count_spin = QSpinBox()
+        self._count_spin.setRange(1, 8)
+        self._count_spin.setValue(4)
+        count_layout.addWidget(self._count_spin)
+
+        aspect_box = QWidget()
+        aspect_layout = QVBoxLayout(aspect_box)
+        aspect_layout.setContentsMargins(0, 0, 0, 0)
+        aspect_layout.setSpacing(4)
+        aspect_layout.addWidget(_label("图片比例", "cap"))
+        self._aspect_combo = QComboBox()
+        self._aspect_combo.addItems(["4:3", "3:4", "1:1", "16:9"])
+        self._aspect_combo.setCurrentText("4:3")
+        aspect_layout.addWidget(self._aspect_combo)
+        row.addWidget(count_box)
+        row.addWidget(aspect_box)
+        content.addLayout(row)
+
+        self._random_btn = QPushButton("🎲 随机未选项")
+        self._random_btn.setObjectName("secondary")
+        content.addWidget(self._random_btn)
+
+        self._generate_btn = QPushButton("✨ 开始生成")
+        self._generate_btn.setObjectName("primary")
+        self._generate_btn.setFixedHeight(44)
+        content.addWidget(self._generate_btn)
+        content.addWidget(_label("API 配置在「设置」页自动保存。", "hint"))
+        content.addStretch(1)
+
+        scroll.setWidget(body)
+        layout.addWidget(scroll)
+        return sidebar
+
+    def _build_right_panel(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        body.setObjectName("ai_right_body")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(28, 28, 28, 28)
+        layout.setSpacing(14)
+
+        results_card = _card("生成结果")
+        self._results_grid = QGridLayout()
+        self._results_grid.setHorizontalSpacing(12)
+        self._results_grid.setVerticalSpacing(12)
+        self._empty_label = _label("生成后在这里预览结果。", "hint")
+        results_card.layout().addWidget(self._empty_label)
+        results_card.layout().addLayout(self._results_grid)
+        layout.addWidget(results_card)
+
+        save_card = _card("保存为模板")
+        save_card.layout().addWidget(_label("勾选需要保留的图片，保存后跳转到模板配置页标注屏幕四角。", "hint"))
+        self._save_btn = QPushButton("保存选中 → 跳转标注角点")
+        self._save_btn.setObjectName("primary")
+        self._save_btn.setEnabled(False)
+        save_card.layout().addWidget(self._save_btn)
+        layout.addWidget(save_card)
+        layout.addStretch(1)
+        scroll.setWidget(body)
+        return scroll
+
+    def _wire_signals(self):
+        self._device_group.selection_changed.connect(self._on_device_changed)
+        self._random_btn.clicked.connect(lambda: self._random_select_unset())
+        self._generate_btn.clicked.connect(self._generate)
+        self._save_btn.clicked.connect(self._save_selected)
+
+    def _on_device_changed(self, value: str):
+        if value == "希沃一体机":
+            self._scene_group.replace_options(_CLASSROOM_SCENES)
+        else:
+            self._scene_group.replace_options(_PERSONAL_SCENES)
+
+    def _random_select_unset(self, rng: random.Random | None = None):
+        rng = rng or random.Random()
+        for group in self._tag_groups:
+            if not group.get_selection():
+                group.random_select(rng)
+
+    def _build_prompt(self) -> str:
+        parts = [
+            "A realistic photo background for PPT screen compositing",
+            "screen displays solid black",
+            "no text, no logo, no watermark",
+        ]
+        for group in self._tag_groups:
+            selection = group.get_selection()
+            if selection:
+                parts.append(self._TRANSLATIONS.get(selection, selection))
+        extra = self._extra_edit.text().strip()
+        if extra:
+            parts.append(extra)
+        parts.append("clean composition, screen corners clearly visible, realistic perspective")
+        return ", ".join(parts)
+
+    def _generate(self):
+        from PyQt6.QtCore import QSettings
+
+        settings = QSettings("融景", "RongJing")
+        api_key = str(settings.value("ai/api_key", "") or "").strip()
+        base_url = str(settings.value("ai/base_url", "https://api.openai.com/v1") or "").strip()
+        model = str(settings.value("ai/model", "gpt-image-2") or "").strip()
+        if not api_key:
+            QMessageBox.warning(self, "缺少 API Key", "请先到「设置」页填写 AI 背景图 API Key。")
+            return
+
+        self._generate_btn.setEnabled(False)
+        self._generate_btn.setText("生成中...")
+        QApplication.processEvents()
+        try:
+            config = AIConfig(api_key=api_key, base_url=base_url, model=model)
+            self._images = generate_backgrounds(
+                config,
+                self._build_prompt(),
+                n=self._count_spin.value(),
+                aspect_ratio=self._aspect_combo.currentText(),
+            )
+            QApplication.processEvents()
+            self._render_results()
+        except (AIAuthError, AIRateLimitError, AIQuotaError, AIBaseURLError, AINetworkError, AIBackgroundError) as exc:
+            QMessageBox.warning(self, "生成失败", str(exc))
+        finally:
+            self._generate_btn.setEnabled(True)
+            self._generate_btn.setText("✨ 开始生成")
+
+    def _render_results(self):
+        self._clear_results()
+        self._empty_label.setVisible(not self._images)
+        aspect = self._aspect_combo.currentText()
+        for idx, image in enumerate(self._images):
+            tile = _ImageTile(image, aspect)
+            self._tiles.append(tile)
+            self._results_grid.addWidget(tile, idx // 2, idx % 2)
+        self._save_btn.setEnabled(bool(self._images))
+
+    def _clear_results(self):
+        while self._results_grid.count():
+            item = self._results_grid.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        self._tiles = []
+
+    def _save_selected(self):
+        os.makedirs(self._backgrounds_dir, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        saved = []
+        for idx, (image, tile) in enumerate(zip(self._images, self._tiles), start=1):
+            if not tile.is_checked():
+                continue
+            path = os.path.join(self._backgrounds_dir, f"ai_{timestamp}_{idx}.png")
+            image.save(path)
+            saved.append(path)
+        if not saved:
+            QMessageBox.information(self, "未选择图片", "请至少勾选一张图片。")
+            return
+        self.save_finished.emit(saved)
+
+
+def _pil_to_pixmap(image: Image.Image) -> QPixmap:
+    buf = io.BytesIO()
+    image.convert("RGBA").save(buf, format="PNG")
+    pix = QPixmap()
+    pix.loadFromData(buf.getvalue(), "PNG")
+    return pix
+
+
+def _label(text: str, object_name: str = "") -> QLabel:
+    lbl = QLabel(text)
+    if object_name:
+        lbl.setObjectName(object_name)
+    return lbl
+
+
+def _card(title: str) -> QFrame:
+    frame = QFrame()
+    frame.setObjectName("aiCard")
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(16, 16, 16, 16)
+    layout.setSpacing(12)
+    layout.addWidget(_label(title, "h2"))
+    return frame
