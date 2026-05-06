@@ -28,10 +28,12 @@ echo "  构建标识: $BUILD"
 pyinstaller \
   --windowed \
   --name "$APP_NAME" \
-  --add-data "templates:templates" \
   --hidden-import "PIL._tkinter_finder" \
   --hidden-import "av" \
+  --hidden-import "cv2" \
+  --hidden-import "numpy" \
   --collect-all "av" \
+  --collect-submodules "openai" \
   --noconfirm \
   --add-data "_build_info.py:." \
   main.py
