@@ -127,27 +127,21 @@ class _PPTImportWorker(QThread):
 
         self.progress.emit("正在生成图片…")
         try:
-            result = subprocess.run(
-                ["pdftoppm", "-png", "-r", "200", pdf_path,
-                 os.path.join(self._export_dir, "slide")],
-                capture_output=True, text=True, timeout=120,
-            )
-        except FileNotFoundError:
+            import fitz
+            doc = fitz.open(pdf_path)
+            for i, page in enumerate(doc):
+                pix = page.get_pixmap(dpi=200)
+                out_path = os.path.join(self._export_dir, f"slide-{i + 1:03d}.png")
+                pix.save(out_path)
+            doc.close()
+        except ImportError:
             self.failed.emit(
-                "缺少 poppler\n"
-                "未找到 pdftoppm 命令。\n请在终端执行：brew install poppler"
+                "缺少 PyMuPDF\n"
+                "未找到 fitz 模块。\n请在终端执行：pip install PyMuPDF"
             )
             return
-        except subprocess.TimeoutExpired:
-            self.failed.emit("图片转换超时\nPDF 转 PNG 超过 2 分钟，请重试。")
-            return
-
-        if result.returncode != 0:
-            self.failed.emit(
-                "图片转换失败\n"
-                "PDF 转 PNG 失败。请确认已安装 poppler（brew install poppler）。\n\n"
-                f"错误信息：{result.stderr[:200]}"
-            )
+        except Exception as exc:
+            self.failed.emit(f"图片转换失败\nPDF 转 PNG 失败。\n\n错误信息：{str(exc)[:200]}")
             return
 
         try:
