@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from PIL import Image
-from PyQt6.QtCore import QSettings, QSignalBlocker, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QSettings, QSignalBlocker, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QColorDialog,
@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.collage_batch_runner import CollageBatchRunner
-from core.collage_processor import calculate_auto_split, create_collage
+from core.collage_processor import calculate_auto_layout, calculate_auto_split, create_collage
 from core.diversifier import DiversifyConfig, diversify_image
 from models.collage_model import CollageManager, CollageTemplate
 from ui.diversify_widget import DiversifyWidget
@@ -58,6 +58,106 @@ _ASPECTS = {
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
 
 
+class _PPTImportWorker(QThread):
+    progress = pyqtSignal(str)
+    finished_ok = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, pptx_path: str, export_dir: str, parent=None):
+        super().__init__(parent)
+        self._pptx_path = pptx_path
+        self._export_dir = export_dir
+
+    def run(self):
+        os.makedirs(self._export_dir, exist_ok=True)
+        pdf_path = os.path.join(self._export_dir, "slides.pdf")
+
+        open_script = (
+            'tell application "Microsoft PowerPoint"\n'
+            f'    open POSIX file "{self._pptx_path}"\n'
+            '    delay 2\n'
+            'end tell'
+        )
+        export_script = (
+            'tell application "Microsoft PowerPoint"\n'
+            '    set pres to active presentation\n'
+            f'    save pres in POSIX file "{pdf_path}" as save as PDF\n'
+            '    delay 1\n'
+            '    close pres saving no\n'
+            'end tell'
+        )
+
+        self.progress.emit("正在打开 PowerPoint…")
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", open_script],
+                capture_output=True, text=True, timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            self.failed.emit("PPT 导出超时\nPowerPoint 导出超过 2 分钟，请重试。")
+            return
+
+        if result.returncode != 0:
+            self.failed.emit(
+                "PPT 导出失败\n"
+                "无法调用 PowerPoint 导出 PDF。\n"
+                "请确认已安装 Microsoft PowerPoint for Mac。\n\n"
+                f"错误信息：{result.stderr[:200]}"
+            )
+            return
+
+        self.progress.emit("正在转换为 PDF…")
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", export_script],
+                capture_output=True, text=True, timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            self.failed.emit("PPT 导出超时\nPowerPoint 导出超过 2 分钟，请重试。")
+            return
+
+        if result.returncode != 0 or not os.path.isfile(pdf_path):
+            self.failed.emit(
+                "PPT 导出失败\n"
+                "无法调用 PowerPoint 导出 PDF。\n"
+                "请确认已安装 Microsoft PowerPoint for Mac。\n\n"
+                f"错误信息：{result.stderr[:200]}"
+            )
+            return
+
+        self.progress.emit("正在生成图片…")
+        try:
+            result = subprocess.run(
+                ["pdftoppm", "-png", "-r", "200", pdf_path,
+                 os.path.join(self._export_dir, "slide")],
+                capture_output=True, text=True, timeout=120,
+            )
+        except FileNotFoundError:
+            self.failed.emit(
+                "缺少 poppler\n"
+                "未找到 pdftoppm 命令。\n请在终端执行：brew install poppler"
+            )
+            return
+        except subprocess.TimeoutExpired:
+            self.failed.emit("图片转换超时\nPDF 转 PNG 超过 2 分钟，请重试。")
+            return
+
+        if result.returncode != 0:
+            self.failed.emit(
+                "图片转换失败\n"
+                "PDF 转 PNG 失败。请确认已安装 poppler（brew install poppler）。\n\n"
+                f"错误信息：{result.stderr[:200]}"
+            )
+            return
+
+        try:
+            os.remove(pdf_path)
+        except OSError:
+            pass
+
+        self.finished_ok.emit(self._export_dir)
+
+
 class CollageTab(QWidget):
     """拼图 Tab — 固定高度两栏布局，预览区占右侧主体。"""
 
@@ -76,8 +176,10 @@ class CollageTab(QWidget):
         self._excluded_indices: set[int] = set()
         self._preview_collage_index = 0
         self._collage_runner: CollageBatchRunner | None = None
+        self._ppt_import_worker: _PPTImportWorker | None = None
         self._cached_preview: Image.Image | None = None
         self._batch_mode = False
+        self._split_mode = "custom"
         self._subfolder_items: list[tuple[str, list[str]]] = []
 
         self._app_data_dir = str(Path(collages_dir).parent)
@@ -85,7 +187,9 @@ class CollageTab(QWidget):
         self.setAcceptDrops(True)
         self._build_ui()
         self._load_template_list()
+        self._refresh_split_template_combo()
         self._wire_signals()
+        self._set_split_mode("custom")
         self._refresh_preset_state()
         self._refresh_mini_preview()
         self._restore_last_dirs()
@@ -186,9 +290,9 @@ class CollageTab(QWidget):
 
         self._add_input_section(content)
         content.addWidget(self._sep())
-        self._add_layout_section(content)
-        content.addWidget(self._sep())
         self._add_split_section(content)
+        content.addWidget(self._sep())
+        self._add_layout_section(content)
         content.addWidget(self._sep())
         self._add_template_section(content)
         content.addWidget(self._sep())
@@ -284,6 +388,7 @@ class CollageTab(QWidget):
         lower_grid.setVerticalSpacing(8)
         self._aspect_combo = QComboBox()
         self._aspect_combo.addItems(_ASPECTS.keys())
+        self._aspect_combo.setCurrentText("自适应")
         self._background_edit = QLineEdit()
         self._background_edit.setMaxLength(7)
         self._background_edit.setText(self._last_background_color())
@@ -312,6 +417,28 @@ class CollageTab(QWidget):
 
     def _add_split_section(self, content: QVBoxLayout):
         content.addWidget(self._label("自动拆分", "h2"))
+
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(8)
+        self._split_template_mode_btn = QPushButton("选择模板")
+        self._split_template_mode_btn.setCheckable(True)
+        self._split_template_mode_btn.setObjectName("preset_btn")
+        self._split_auto_mode_btn = QPushButton("自动适配")
+        self._split_auto_mode_btn.setCheckable(True)
+        self._split_auto_mode_btn.setObjectName("preset_btn")
+        self._split_custom_mode_btn = QPushButton("自定义")
+        self._split_custom_mode_btn.setCheckable(True)
+        self._split_custom_mode_btn.setChecked(True)
+        self._split_custom_mode_btn.setObjectName("preset_btn")
+        mode_row.addWidget(self._split_template_mode_btn)
+        mode_row.addWidget(self._split_auto_mode_btn)
+        mode_row.addWidget(self._split_custom_mode_btn)
+        content.addLayout(mode_row)
+
+        self._split_template_combo = QComboBox()
+        self._split_template_combo.setVisible(False)
+        content.addWidget(self._split_template_combo)
+
         row = QHBoxLayout()
         row.setSpacing(8)
         row.addWidget(self._label("输出", "cap"))
@@ -470,6 +597,10 @@ class CollageTab(QWidget):
         self._single_mode_btn.clicked.connect(lambda: self._set_batch_mode(False))
         self._batch_mode_btn.clicked.connect(lambda: self._set_batch_mode(True))
         self._subfolder_list.currentRowChanged.connect(self._on_subfolder_selected)
+        self._split_template_mode_btn.clicked.connect(lambda: self._set_split_mode("template"))
+        self._split_auto_mode_btn.clicked.connect(lambda: self._set_split_mode("auto"))
+        self._split_custom_mode_btn.clicked.connect(lambda: self._set_split_mode("custom"))
+        self._split_template_combo.currentIndexChanged.connect(self._on_split_template_selected)
 
     # ── Input handling ────────────────────────────────────────────
     def _choose_input_dir(self):
@@ -488,83 +619,63 @@ class CollageTab(QWidget):
     def _import_pptx(self, pptx_path: str):
         import shutil
 
+        if self._ppt_import_worker and self._ppt_import_worker.isRunning():
+            QMessageBox.warning(self, "PPT 正在导入", "请等待当前 PPT 导入完成。")
+            return
+
         export_dir = os.path.join(self._app_data_dir, "ppt_export", Path(pptx_path).stem)
+        cached_pngs = []
+        if os.path.isdir(export_dir):
+            cached_pngs = [
+                name for name in os.listdir(export_dir)
+                if os.path.splitext(name)[1].lower() == ".png"
+            ]
+        if cached_pngs:
+            answer = QMessageBox.question(
+                self,
+                "使用已导出的图片",
+                f"已导出过 {len(cached_pngs)} 页，是否直接使用？",
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                self._set_input_dir(export_dir)
+                return
+
         if os.path.isdir(export_dir):
             shutil.rmtree(export_dir, ignore_errors=True)
         os.makedirs(export_dir, exist_ok=True)
 
-        pdf_path = os.path.join(export_dir, "slides.pdf")
-
-        script = (
-            'tell application "Microsoft PowerPoint"\n'
-            f'    open POSIX file "{pptx_path}"\n'
-            '    delay 2\n'
-            '    set pres to active presentation\n'
-            f'    save pres in POSIX file "{pdf_path}" as save as PDF\n'
-            '    delay 1\n'
-            '    close pres saving no\n'
-            'end tell'
+        self._choose_dir_btn.setEnabled(False)
+        self._import_ppt_btn.setEnabled(False)
+        self._ppt_import_worker = _PPTImportWorker(pptx_path, export_dir, self)
+        self._ppt_import_worker.progress.connect(self._on_ppt_import_progress)
+        self._ppt_import_worker.finished_ok.connect(self._on_ppt_import_done)
+        self._ppt_import_worker.failed.connect(self._on_ppt_import_failed)
+        self._ppt_import_worker.finished.connect(self._ppt_import_worker.deleteLater)
+        self._ppt_import_worker.finished.connect(
+            lambda worker=self._ppt_import_worker: self._clear_ppt_import_worker(worker)
         )
-        self._input_path_label.setText("正在导出 PPT…")
-        from PyQt6.QtWidgets import QApplication
-        QApplication.processEvents()
+        self._ppt_import_worker.start()
 
-        try:
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True, text=True, timeout=120,
-            )
-        except subprocess.TimeoutExpired:
-            QMessageBox.warning(self, "PPT 导出超时", "PowerPoint 导出超过 2 分钟，请重试。")
-            self._input_path_label.setText("PPT 导出超时")
-            return
+    def _on_ppt_import_progress(self, msg: str):
+        self._input_path_label.setText(msg)
 
-        if result.returncode != 0 or not os.path.isfile(pdf_path):
-            QMessageBox.warning(
-                self, "PPT 导出失败",
-                "无法调用 PowerPoint 导出 PDF。\n"
-                "请确认已安装 Microsoft PowerPoint for Mac。\n\n"
-                f"错误信息：{result.stderr[:200]}"
-            )
-            self._input_path_label.setText("PPT 导出失败")
-            return
-
-        self._input_path_label.setText("正在转换为图片…")
-        QApplication.processEvents()
-
-        try:
-            result = subprocess.run(
-                ["pdftoppm", "-png", "-r", "200", pdf_path,
-                 os.path.join(export_dir, "slide")],
-                capture_output=True, text=True, timeout=120,
-            )
-        except FileNotFoundError:
-            QMessageBox.warning(
-                self, "缺少 poppler",
-                "未找到 pdftoppm 命令。\n请在终端执行：brew install poppler"
-            )
-            self._input_path_label.setText("缺少 poppler")
-            return
-        except subprocess.TimeoutExpired:
-            QMessageBox.warning(self, "图片转换超时", "PDF 转 PNG 超过 2 分钟，请重试。")
-            self._input_path_label.setText("图片转换超时")
-            return
-
-        if result.returncode != 0:
-            QMessageBox.warning(
-                self, "图片转换失败",
-                "PDF 转 PNG 失败。请确认已安装 poppler（brew install poppler）。\n\n"
-                f"错误信息：{result.stderr[:200]}"
-            )
-            self._input_path_label.setText("图片转换失败")
-            return
-
-        try:
-            os.remove(pdf_path)
-        except OSError:
-            pass
-
+    def _on_ppt_import_done(self, export_dir: str):
         self._set_input_dir(export_dir)
+        self._restore_ppt_import_buttons()
+
+    def _on_ppt_import_failed(self, error: str):
+        title, _, message = error.partition("\n")
+        QMessageBox.warning(self, title or "PPT 导入失败", message or error)
+        self._input_path_label.setText(title or "PPT 导入失败")
+        self._restore_ppt_import_buttons()
+
+    def _restore_ppt_import_buttons(self):
+        self._choose_dir_btn.setEnabled(True)
+        self._import_ppt_btn.setEnabled(True)
+
+    def _clear_ppt_import_worker(self, worker: _PPTImportWorker):
+        if self._ppt_import_worker is worker:
+            self._ppt_import_worker = None
 
     def _set_input_dir(self, path: str):
         self._input_dir = path
@@ -749,9 +860,11 @@ class CollageTab(QWidget):
         pm = label.pixmap()
         if pm is None or pm.isNull():
             return
-        x_ratio = event.position().x() / max(1, label.width())
-        split_x = int(x_ratio * self._original_pixmap.width())
-        split_x = max(0, min(split_x, self._original_pixmap.width()))
+        pm_w = self._original_pixmap.width()
+        x_offset = (label.width() - pm_w) / 2
+        mouse_x = event.position().x() - x_offset
+        x_ratio = max(0.0, min(1.0, mouse_x / max(1, pm_w)))
+        split_x = int(x_ratio * pm_w)
         composite = self._original_pixmap.copy()
         painter = QPainter(composite)
         src_rect = composite.rect()
@@ -936,6 +1049,88 @@ class CollageTab(QWidget):
             else:
                 QMessageBox.warning(self, "处理结果", msg)
 
+    # ── Split mode ────────────────────────────────────────────────
+    def _set_split_mode(self, mode: str):
+        if mode not in ("template", "auto", "custom"):
+            return
+        self._split_mode = mode
+
+        button_map = {
+            "template": self._split_template_mode_btn,
+            "auto": self._split_auto_mode_btn,
+            "custom": self._split_custom_mode_btn,
+        }
+        blockers = [QSignalBlocker(btn) for btn in button_map.values()]
+        for name, btn in button_map.items():
+            btn.setChecked(name == mode)
+        del blockers
+
+        if mode == "template":
+            self._refresh_split_template_combo()
+            self._split_template_combo.setVisible(True)
+            self._set_layout_controls_enabled(False)
+            self._apply_selected_split_template()
+        elif mode == "auto":
+            self._split_template_combo.setVisible(False)
+            self._set_layout_controls_enabled(True, auto_rows_cols=True)
+            self._apply_auto_layout(emit=True)
+        else:
+            self._split_template_combo.setVisible(False)
+            self._set_layout_controls_enabled(True)
+
+        self._refresh_preset_state()
+        self._refresh_mini_preview()
+        self._refresh_state()
+
+    def _set_layout_controls_enabled(self, enabled: bool, auto_rows_cols: bool = False):
+        row_col_enabled = enabled and not auto_rows_cols
+        self._row_spin.setEnabled(row_col_enabled)
+        self._col_spin.setEnabled(row_col_enabled)
+        self._gap_spin.setEnabled(enabled)
+        self._padding_spin.setEnabled(enabled)
+        self._aspect_combo.setEnabled(enabled)
+        self._background_edit.setEnabled(enabled)
+        self._color_swatch.setEnabled(enabled)
+        presets_enabled = enabled and not auto_rows_cols
+        for btn in self._preset_buttons.values():
+            btn.setEnabled(presets_enabled)
+
+    def _refresh_split_template_combo(self):
+        if not hasattr(self, "_split_template_combo"):
+            return
+        current_name = self._split_template_combo.currentText()
+        blocker = QSignalBlocker(self._split_template_combo)
+        self._split_template_combo.clear()
+        for tpl in self._mgr.load_all():
+            self._split_template_combo.addItem(tpl.name, tpl)
+            if tpl.name == current_name:
+                self._split_template_combo.setCurrentIndex(self._split_template_combo.count() - 1)
+        del blocker
+
+    def _on_split_template_selected(self, _index: int):
+        if self._split_mode == "template":
+            self._apply_selected_split_template()
+
+    def _apply_selected_split_template(self):
+        tpl = self._split_template_combo.currentData()
+        if isinstance(tpl, CollageTemplate):
+            self.set_config(tpl)
+
+    def _apply_auto_layout(self, emit: bool = False):
+        selected_count = len(self._selected_image_files())
+        rows, cols = calculate_auto_layout(selected_count)
+        changed = self._row_spin.value() != rows or self._col_spin.value() != cols
+        blockers = [QSignalBlocker(self._row_spin), QSignalBlocker(self._col_spin)]
+        self._row_spin.setValue(rows)
+        self._col_spin.setValue(cols)
+        del blockers
+        if changed:
+            self._current_collage = None
+            self._refresh_preset_state()
+            self._refresh_mini_preview()
+            if emit:
+                self._emit_config_changed()
+
     # ── State refresh ─────────────────────────────────────────────
     def _refresh_state(self):
         if not hasattr(self, "_output_count_spin"):
@@ -943,6 +1138,8 @@ class CollageTab(QWidget):
         selected = self._selected_image_files()
         total = len(self._image_files)
         selected_count = len(selected)
+        if self._split_mode == "auto":
+            self._apply_auto_layout()
         max_outputs = max(1, selected_count)
         if self._output_count_spin.maximum() != max_outputs:
             self._output_count_spin.setMaximum(max_outputs)
@@ -977,6 +1174,8 @@ class CollageTab(QWidget):
 
     # ── Behaviors ─────────────────────────────────────────────────
     def _on_preset_clicked(self, name: str):
+        if self._split_mode != "custom":
+            return
         rows, cols = (int(part) for part in name.split("×", 1))
         blockers = [QSignalBlocker(self._row_spin), QSignalBlocker(self._col_spin)]
         self._row_spin.setValue(rows)
@@ -1002,6 +1201,8 @@ class CollageTab(QWidget):
         self._refresh_state()
 
     def _on_template_item_clicked(self, item: QListWidgetItem):
+        if self._split_mode != "custom":
+            return
         tpl = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(tpl, CollageTemplate):
             self.set_config(tpl)
@@ -1029,6 +1230,7 @@ class CollageTab(QWidget):
         self._mgr.save(tpl)
         self._current_collage = tpl
         self._load_template_list(select_name=name)
+        self._refresh_split_template_combo()
 
     def _delete_selected_template(self):
         item = self._template_list.currentItem()
@@ -1041,6 +1243,7 @@ class CollageTab(QWidget):
         if self._current_collage and self._current_collage.name == name:
             self._current_collage = None
         self._load_template_list()
+        self._refresh_split_template_combo()
 
     def _choose_background_color(self):
         color = QColorDialog.getColor(QColor(self._background_edit.text()), self, "选择背景色")

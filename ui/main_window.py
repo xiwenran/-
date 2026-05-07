@@ -1,6 +1,10 @@
+import json
 import os
+import shutil
 import sys
 import subprocess
+import zipfile
+from datetime import datetime
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget,
@@ -1051,6 +1055,17 @@ class MainWindow(QMainWindow):
             edit.editingFinished.connect(lambda k=key, e=edit, d=default: self._save_ai_setting(k, e, d))
         lv.addWidget(ai_card)
 
+        # Data backup card
+        backup_card = _card(_lbl("数据备份与恢复", "h2"))
+        backup_card.layout().addWidget(_lbl("导出或导入所有模板和背景图数据。", "hint"))
+        backup_card.layout().addSpacing(8)
+        btn_export = QPushButton("导出备份 (.zip)")
+        btn_export.clicked.connect(self._export_backup)
+        btn_import = QPushButton("导入备份 (.zip)")
+        btn_import.clicked.connect(self._import_backup)
+        backup_card.layout().addLayout(_row(btn_export, btn_import, None))
+        lv.addWidget(backup_card)
+
         # Data management card
         data_card = _card(_lbl("数据管理", "h2"))
         data_card.layout().addWidget(_lbl("清除所有模板数据，用于卸载前清理本地存储。", "hint"))
@@ -1149,7 +1164,6 @@ class MainWindow(QMainWindow):
             self._refresh_template_list()
 
     def _uninstall_data(self):
-        import shutil
         data_dir = os.path.dirname(self.tm.templates_dir)
         ret = QMessageBox.warning(
             self, "清除所有数据",
@@ -1165,6 +1179,185 @@ class MainWindow(QMainWindow):
                 self._refresh_template_list()
             except Exception as e:
                 QMessageBox.critical(self, "错误", str(e))
+
+    def _export_backup(self):
+        default_name = f"融景_backup_{datetime.now().strftime('%Y%m%d')}.zip"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出备份", default_name, "Zip Files (*.zip)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".zip"):
+            path += ".zip"
+
+        templates = self._backup_files(self.tm.templates_dir, ".json")
+        backgrounds_dir = getattr(self.tm, "backgrounds_dir", None) or os.path.join(
+            os.path.dirname(self.tm.templates_dir), "backgrounds"
+        )
+        backgrounds = self._backup_files(
+            backgrounds_dir,
+            (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".heic"),
+        )
+        collages = self._backup_files(self._collages_dir, ".json")
+        manifest = {
+            "version": 1,
+            "created": datetime.now().isoformat(timespec="seconds"),
+            "templates_count": len(templates),
+            "collages_count": len(collages),
+            "backgrounds_count": len(backgrounds),
+        }
+
+        try:
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for src in templates:
+                    zf.write(src, os.path.join("templates", os.path.basename(src)))
+                for src in backgrounds:
+                    zf.write(src, os.path.join("backgrounds", os.path.basename(src)))
+                for src in collages:
+                    zf.write(src, os.path.join("collages", os.path.basename(src)))
+                zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            QMessageBox.information(self, "导出完成", f"备份已导出：\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+
+    def _import_backup(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入备份", "", "Zip Files (*.zip)"
+        )
+        if not path:
+            return
+
+        try:
+            with zipfile.ZipFile(path, "r") as zf:
+                names = zf.namelist()
+                if "manifest.json" not in names:
+                    QMessageBox.critical(self, "导入失败", "备份文件缺少 manifest.json。")
+                    return
+
+                mode = self._ask_backup_import_mode()
+                if mode is None:
+                    return
+
+                templates_dir = self.tm.templates_dir
+                backgrounds_dir = getattr(self.tm, "backgrounds_dir", None) or os.path.join(
+                    os.path.dirname(self.tm.templates_dir), "backgrounds"
+                )
+                collages_dir = self._collages_dir or os.path.join(
+                    os.path.dirname(self.tm.templates_dir), "collages"
+                )
+
+                for directory in (templates_dir, backgrounds_dir, collages_dir):
+                    os.makedirs(directory, exist_ok=True)
+                if mode == "overwrite":
+                    self._clear_backup_target_dirs(templates_dir, backgrounds_dir, collages_dir)
+
+                background_names = {
+                    os.path.basename(name)
+                    for name in names
+                    if self._is_backup_member(name, "backgrounds") and not name.endswith("/")
+                }
+                for name in names:
+                    if self._is_backup_member(name, "backgrounds"):
+                        self._extract_backup_member(zf, name, backgrounds_dir, mode)
+                    elif self._is_backup_member(name, "collages", ".json"):
+                        self._extract_backup_member(zf, name, collages_dir, mode)
+                    elif self._is_backup_member(name, "templates", ".json"):
+                        self._extract_template_member(
+                            zf, name, templates_dir, backgrounds_dir, background_names, mode
+                        )
+
+            self._refresh_template_list()
+            if self._collage_tab is not None and hasattr(self._collage_tab, "_load_template_list"):
+                self._collage_tab._load_template_list()
+            QMessageBox.information(self, "导入完成", "备份数据已导入。")
+        except zipfile.BadZipFile:
+            QMessageBox.critical(self, "导入失败", "请选择有效的 .zip 备份文件。")
+        except Exception as e:
+            QMessageBox.critical(self, "导入失败", str(e))
+
+    @staticmethod
+    def _backup_files(directory: str | None, suffixes) -> list[str]:
+        if not directory or not os.path.isdir(directory):
+            return []
+        if isinstance(suffixes, str):
+            suffixes = (suffixes,)
+        suffixes = tuple(s.lower() for s in suffixes)
+        return [
+            os.path.join(directory, fn)
+            for fn in sorted(os.listdir(directory), key=natural_sort_key)
+            if os.path.isfile(os.path.join(directory, fn)) and fn.lower().endswith(suffixes)
+        ]
+
+    @staticmethod
+    def _is_backup_member(name: str, folder: str, suffix: str | None = None) -> bool:
+        normalized = name.replace("\\", "/")
+        if normalized != os.path.normpath(normalized).replace("\\", "/"):
+            return False
+        prefix = f"{folder}/"
+        if not normalized.startswith(prefix) or normalized.endswith("/"):
+            return False
+        filename = normalized[len(prefix):]
+        if "/" in filename or not filename:
+            return False
+        return suffix is None or filename.lower().endswith(suffix)
+
+    @staticmethod
+    def _clear_backup_target_dirs(*directories: str):
+        seen = set()
+        for directory in directories:
+            abspath = os.path.abspath(directory)
+            if abspath in seen:
+                continue
+            seen.add(abspath)
+            shutil.rmtree(abspath, ignore_errors=True)
+            os.makedirs(abspath, exist_ok=True)
+
+    def _ask_backup_import_mode(self) -> str | None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("导入备份")
+        box.setText("请选择导入方式：")
+        merge_btn = box.addButton("合并（保留已有、导入新增）", QMessageBox.ButtonRole.AcceptRole)
+        overwrite_btn = box.addButton("覆盖（清空后全量导入）", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == merge_btn:
+            return "merge"
+        if clicked == overwrite_btn:
+            return "overwrite"
+        return None
+
+    def _extract_backup_member(self, zf: zipfile.ZipFile, name: str, target_dir: str, mode: str) -> bool:
+        target = os.path.join(target_dir, os.path.basename(name))
+        if mode == "merge" and os.path.exists(target):
+            return False
+        with zf.open(name) as src, open(target, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        return True
+
+    def _extract_template_member(
+        self,
+        zf: zipfile.ZipFile,
+        name: str,
+        target_dir: str,
+        backgrounds_dir: str,
+        background_names: set[str],
+        mode: str,
+    ) -> bool:
+        target = os.path.join(target_dir, os.path.basename(name))
+        if mode == "merge" and os.path.exists(target):
+            return False
+
+        data = json.loads(zf.read(name).decode("utf-8"))
+        background_path = data.get("background_path")
+        if isinstance(background_path, str):
+            background_name = os.path.basename(background_path)
+            if background_name in background_names:
+                data["background_path"] = os.path.join(backgrounds_dir, background_name)
+        with open(target, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
 
     def _save_template(self):
         name = self.tpl_name_edit.text().strip()

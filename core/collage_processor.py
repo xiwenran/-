@@ -121,6 +121,34 @@ def calculate_auto_split(
     return ranges
 
 
+def calculate_auto_layout(num_images: int) -> tuple[int, int]:
+    """根据图片数量自动选最佳 (rows, cols)，优先竖版 3:4 比例。
+
+    偏好行多列少，拼出接近 3:4 竖版比例。
+    列数优先 1-2 列，3 行以内。
+    """
+    if num_images <= 0:
+        return (1, 1)
+
+    best: tuple[tuple[int, int, float, int], tuple[int, int]] | None = None
+    for rows in range(1, 5):
+        for cols in range(1, 5):
+            cells = rows * cols
+            if cells < num_images:
+                continue
+            waste = cells - num_images
+            landscape_penalty = 1 if rows < cols else 0
+            ratio_distance = abs((rows / cols) - 1.5)
+            col_penalty = 0 if cols <= 2 else cols - 2
+            score = (waste, landscape_penalty, ratio_distance, col_penalty)
+            if best is None or score < best[0]:
+                best = (score, (rows, cols))
+
+    if best is None:
+        return (4, 4)
+    return best[1]
+
+
 def calculate_dropped_pages(
     total_pages: int,
     total_output_images: int,
