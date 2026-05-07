@@ -3,6 +3,7 @@ import os
 import shutil
 import sys
 import subprocess
+import tempfile
 import zipfile
 from datetime import datetime
 
@@ -1227,6 +1228,7 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
+        staging_dir = None
         try:
             with zipfile.ZipFile(path, "r") as zf:
                 names = zf.namelist()
@@ -1248,8 +1250,22 @@ class MainWindow(QMainWindow):
 
                 for directory in (templates_dir, backgrounds_dir, collages_dir):
                     os.makedirs(directory, exist_ok=True)
+
                 if mode == "overwrite":
-                    self._clear_backup_target_dirs(templates_dir, backgrounds_dir, collages_dir)
+                    staging_dir = tempfile.mkdtemp(prefix="rongjing_backup_")
+                    extract_templates_dir = os.path.join(staging_dir, "templates")
+                    extract_backgrounds_dir = os.path.join(staging_dir, "backgrounds")
+                    extract_collages_dir = os.path.join(staging_dir, "collages")
+                    for directory in (
+                        extract_templates_dir,
+                        extract_backgrounds_dir,
+                        extract_collages_dir,
+                    ):
+                        os.makedirs(directory, exist_ok=True)
+                else:
+                    extract_templates_dir = templates_dir
+                    extract_backgrounds_dir = backgrounds_dir
+                    extract_collages_dir = collages_dir
 
                 background_names = {
                     os.path.basename(name)
@@ -1258,13 +1274,31 @@ class MainWindow(QMainWindow):
                 }
                 for name in names:
                     if self._is_backup_member(name, "backgrounds"):
-                        self._extract_backup_member(zf, name, backgrounds_dir, mode)
+                        self._extract_backup_member(zf, name, extract_backgrounds_dir, mode)
                     elif self._is_backup_member(name, "collages", ".json"):
-                        self._extract_backup_member(zf, name, collages_dir, mode)
+                        self._extract_backup_member(zf, name, extract_collages_dir, mode)
                     elif self._is_backup_member(name, "templates", ".json"):
                         self._extract_template_member(
-                            zf, name, templates_dir, backgrounds_dir, background_names, mode
+                            zf,
+                            name,
+                            extract_templates_dir,
+                            backgrounds_dir,
+                            background_names,
+                            mode,
                         )
+
+                if mode == "overwrite":
+                    self._clear_backup_target_dirs(templates_dir, backgrounds_dir, collages_dir)
+                    for src_dir, dst_dir in (
+                        (extract_templates_dir, templates_dir),
+                        (extract_backgrounds_dir, backgrounds_dir),
+                        (extract_collages_dir, collages_dir),
+                    ):
+                        for filename in os.listdir(src_dir):
+                            shutil.move(
+                                os.path.join(src_dir, filename),
+                                os.path.join(dst_dir, filename),
+                            )
 
             self._refresh_template_list()
             if self._collage_tab is not None and hasattr(self._collage_tab, "_load_template_list"):
@@ -1274,6 +1308,9 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "导入失败", "请选择有效的 .zip 备份文件。")
         except Exception as e:
             QMessageBox.critical(self, "导入失败", str(e))
+        finally:
+            if staging_dir is not None:
+                shutil.rmtree(staging_dir, ignore_errors=True)
 
     @staticmethod
     def _backup_files(directory: str | None, suffixes) -> list[str]:

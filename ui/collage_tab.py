@@ -72,44 +72,24 @@ class _PPTImportWorker(QThread):
         os.makedirs(self._export_dir, exist_ok=True)
         pdf_path = os.path.join(self._export_dir, "slides.pdf")
 
-        open_script = (
-            'tell application "Microsoft PowerPoint"\n'
-            f'    open POSIX file "{self._pptx_path}"\n'
-            '    delay 2\n'
-            'end tell'
-        )
-        export_script = (
-            'tell application "Microsoft PowerPoint"\n'
-            '    set pres to active presentation\n'
-            f'    save pres in POSIX file "{pdf_path}" as save as PDF\n'
-            '    delay 1\n'
-            '    close pres saving no\n'
-            'end tell'
+        script = (
+            'on run argv\n'
+            '    set pptxPath to item 1 of argv\n'
+            '    set pdfPath to item 2 of argv\n'
+            '    tell application "Microsoft PowerPoint"\n'
+            '        set pres to (open (POSIX file pptxPath))\n'
+            '        delay 2\n'
+            '        save pres in (POSIX file pdfPath) as save as PDF\n'
+            '        delay 1\n'
+            '        close pres saving no\n'
+            '    end tell\n'
+            'end run'
         )
 
-        self.progress.emit("正在打开 PowerPoint…")
+        self.progress.emit("正在通过 PowerPoint 导出 PDF…")
         try:
             result = subprocess.run(
-                ["osascript", "-e", open_script],
-                capture_output=True, text=True, timeout=120,
-            )
-        except subprocess.TimeoutExpired:
-            self.failed.emit("PPT 导出超时\nPowerPoint 导出超过 2 分钟，请重试。")
-            return
-
-        if result.returncode != 0:
-            self.failed.emit(
-                "PPT 导出失败\n"
-                "无法调用 PowerPoint 导出 PDF。\n"
-                "请确认已安装 Microsoft PowerPoint for Mac。\n\n"
-                f"错误信息：{result.stderr[:200]}"
-            )
-            return
-
-        self.progress.emit("正在转换为 PDF…")
-        try:
-            result = subprocess.run(
-                ["osascript", "-e", export_script],
+                ["osascript", "-e", script, self._pptx_path, pdf_path],
                 capture_output=True, text=True, timeout=120,
             )
         except subprocess.TimeoutExpired:
