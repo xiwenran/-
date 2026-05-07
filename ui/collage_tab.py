@@ -173,7 +173,7 @@ class CollageTab(QWidget):
         self._ppt_import_worker: _PPTImportWorker | None = None
         self._cached_preview: Image.Image | None = None
         self._batch_mode = False
-        self._split_mode = "custom"
+        self._auto_adapt_active = False
         self._subfolder_items: list[tuple[str, list[str]]] = []
 
         self._app_data_dir = str(Path(collages_dir).parent)
@@ -181,9 +181,7 @@ class CollageTab(QWidget):
         self.setAcceptDrops(True)
         self._build_ui()
         self._load_template_list()
-        self._refresh_split_template_combo()
         self._wire_signals()
-        self._set_split_mode("custom")
         self._refresh_preset_state()
         self._refresh_mini_preview()
         self._restore_last_dirs()
@@ -284,9 +282,9 @@ class CollageTab(QWidget):
 
         self._add_input_section(content)
         content.addWidget(self._sep())
-        self._add_split_section(content)
-        content.addWidget(self._sep())
         self._add_layout_section(content)
+        content.addWidget(self._sep())
+        self._add_split_section(content)
         content.addWidget(self._sep())
         self._add_template_section(content)
         content.addWidget(self._sep())
@@ -364,6 +362,14 @@ class CollageTab(QWidget):
             self._preset_buttons[name] = btn
         content.addLayout(preset_row)
 
+        adapt_row = QHBoxLayout()
+        adapt_row.setSpacing(0)
+        self._auto_adapt_btn = QPushButton("✦  自动适配")
+        self._auto_adapt_btn.setCheckable(True)
+        self._auto_adapt_btn.setObjectName("auto_adapt_btn")
+        adapt_row.addWidget(self._auto_adapt_btn)
+        content.addLayout(adapt_row)
+
         grid = QGridLayout()
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(8)
@@ -411,27 +417,6 @@ class CollageTab(QWidget):
 
     def _add_split_section(self, content: QVBoxLayout):
         content.addWidget(self._label("自动拆分", "h2"))
-
-        mode_row = QHBoxLayout()
-        mode_row.setSpacing(8)
-        self._split_template_mode_btn = QPushButton("选择模板")
-        self._split_template_mode_btn.setCheckable(True)
-        self._split_template_mode_btn.setObjectName("preset_btn")
-        self._split_auto_mode_btn = QPushButton("自动适配")
-        self._split_auto_mode_btn.setCheckable(True)
-        self._split_auto_mode_btn.setObjectName("preset_btn")
-        self._split_custom_mode_btn = QPushButton("自定义")
-        self._split_custom_mode_btn.setCheckable(True)
-        self._split_custom_mode_btn.setChecked(True)
-        self._split_custom_mode_btn.setObjectName("preset_btn")
-        mode_row.addWidget(self._split_template_mode_btn)
-        mode_row.addWidget(self._split_auto_mode_btn)
-        mode_row.addWidget(self._split_custom_mode_btn)
-        content.addLayout(mode_row)
-
-        self._split_template_combo = QComboBox()
-        self._split_template_combo.setVisible(False)
-        content.addWidget(self._split_template_combo)
 
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -591,10 +576,7 @@ class CollageTab(QWidget):
         self._single_mode_btn.clicked.connect(lambda: self._set_batch_mode(False))
         self._batch_mode_btn.clicked.connect(lambda: self._set_batch_mode(True))
         self._subfolder_list.currentRowChanged.connect(self._on_subfolder_selected)
-        self._split_template_mode_btn.clicked.connect(lambda: self._set_split_mode("template"))
-        self._split_auto_mode_btn.clicked.connect(lambda: self._set_split_mode("auto"))
-        self._split_custom_mode_btn.clicked.connect(lambda: self._set_split_mode("custom"))
-        self._split_template_combo.currentIndexChanged.connect(self._on_split_template_selected)
+        self._auto_adapt_btn.clicked.connect(self._on_auto_adapt_clicked)
 
     # ── Input handling ────────────────────────────────────────────
     def _choose_input_dir(self):
@@ -1044,86 +1026,20 @@ class CollageTab(QWidget):
                 QMessageBox.warning(self, "处理结果", msg)
 
     # ── Split mode ────────────────────────────────────────────────
-    def _set_split_mode(self, mode: str):
-        if mode not in ("template", "auto", "custom"):
-            return
-        self._split_mode = mode
-
-        button_map = {
-            "template": self._split_template_mode_btn,
-            "auto": self._split_auto_mode_btn,
-            "custom": self._split_custom_mode_btn,
-        }
-        blockers = [QSignalBlocker(btn) for btn in button_map.values()]
-        for name, btn in button_map.items():
-            btn.setChecked(name == mode)
-        del blockers
-
-        if mode == "template":
-            self._refresh_split_template_combo()
-            self._split_template_combo.setVisible(True)
-            self._set_layout_controls_enabled(False)
-            self._apply_selected_split_template()
-        elif mode == "auto":
-            self._split_template_combo.setVisible(False)
-            self._set_layout_controls_enabled(True, auto_rows_cols=True)
-            self._apply_auto_layout(emit=True)
-        else:
-            self._split_template_combo.setVisible(False)
-            self._set_layout_controls_enabled(True)
-
-        self._refresh_preset_state()
-        self._refresh_mini_preview()
-        self._refresh_state()
-
-    def _set_layout_controls_enabled(self, enabled: bool, auto_rows_cols: bool = False):
-        row_col_enabled = enabled and not auto_rows_cols
-        self._row_spin.setEnabled(row_col_enabled)
-        self._col_spin.setEnabled(row_col_enabled)
-        self._gap_spin.setEnabled(enabled)
-        self._padding_spin.setEnabled(enabled)
-        self._aspect_combo.setEnabled(enabled)
-        self._background_edit.setEnabled(enabled)
-        self._color_swatch.setEnabled(enabled)
-        presets_enabled = enabled and not auto_rows_cols
-        for btn in self._preset_buttons.values():
-            btn.setEnabled(presets_enabled)
-
-    def _refresh_split_template_combo(self):
-        if not hasattr(self, "_split_template_combo"):
-            return
-        current_name = self._split_template_combo.currentText()
-        blocker = QSignalBlocker(self._split_template_combo)
-        self._split_template_combo.clear()
-        for tpl in self._mgr.load_all():
-            self._split_template_combo.addItem(tpl.name, tpl)
-            if tpl.name == current_name:
-                self._split_template_combo.setCurrentIndex(self._split_template_combo.count() - 1)
-        del blocker
-
-    def _on_split_template_selected(self, _index: int):
-        if self._split_mode == "template":
-            self._apply_selected_split_template()
-
-    def _apply_selected_split_template(self):
-        tpl = self._split_template_combo.currentData()
-        if isinstance(tpl, CollageTemplate):
-            self.set_config(tpl)
-
-    def _apply_auto_layout(self, emit: bool = False):
+    def _on_auto_adapt_clicked(self):
         selected_count = len(self._selected_image_files())
+        if selected_count == 0:
+            return
         rows, cols = calculate_auto_layout(selected_count)
-        changed = self._row_spin.value() != rows or self._col_spin.value() != cols
         blockers = [QSignalBlocker(self._row_spin), QSignalBlocker(self._col_spin)]
         self._row_spin.setValue(rows)
         self._col_spin.setValue(cols)
         del blockers
-        if changed:
-            self._current_collage = None
-            self._refresh_preset_state()
-            self._refresh_mini_preview()
-            if emit:
-                self._emit_config_changed()
+        self._auto_adapt_active = True
+        self._current_collage = None
+        self._refresh_preset_state()
+        self._refresh_mini_preview()
+        self._emit_config_changed()
 
     # ── State refresh ─────────────────────────────────────────────
     def _refresh_state(self):
@@ -1132,8 +1048,6 @@ class CollageTab(QWidget):
         selected = self._selected_image_files()
         total = len(self._image_files)
         selected_count = len(selected)
-        if self._split_mode == "auto":
-            self._apply_auto_layout()
         max_outputs = max(1, selected_count)
         if self._output_count_spin.maximum() != max_outputs:
             self._output_count_spin.setMaximum(max_outputs)
@@ -1168,19 +1082,19 @@ class CollageTab(QWidget):
 
     # ── Behaviors ─────────────────────────────────────────────────
     def _on_preset_clicked(self, name: str):
-        if self._split_mode != "custom":
-            return
         rows, cols = (int(part) for part in name.split("×", 1))
         blockers = [QSignalBlocker(self._row_spin), QSignalBlocker(self._col_spin)]
         self._row_spin.setValue(rows)
         self._col_spin.setValue(cols)
         del blockers
+        self._auto_adapt_active = False
         self._refresh_preset_state()
         self._refresh_mini_preview()
         self._emit_config_changed()
 
     def _on_form_changed(self, *_args):
         self._current_collage = None
+        self._auto_adapt_active = False
         self._refresh_preset_state()
         self._refresh_mini_preview()
         self._emit_config_changed()
@@ -1195,8 +1109,6 @@ class CollageTab(QWidget):
         self._refresh_state()
 
     def _on_template_item_clicked(self, item: QListWidgetItem):
-        if self._split_mode != "custom":
-            return
         tpl = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(tpl, CollageTemplate):
             self.set_config(tpl)
@@ -1224,7 +1136,6 @@ class CollageTab(QWidget):
         self._mgr.save(tpl)
         self._current_collage = tpl
         self._load_template_list(select_name=name)
-        self._refresh_split_template_combo()
 
     def _delete_selected_template(self):
         item = self._template_list.currentItem()
@@ -1237,7 +1148,6 @@ class CollageTab(QWidget):
         if self._current_collage and self._current_collage.name == name:
             self._current_collage = None
         self._load_template_list()
-        self._refresh_split_template_combo()
 
     def _choose_background_color(self):
         color = QColorDialog.getColor(QColor(self._background_edit.text()), self, "选择背景色")
@@ -1260,8 +1170,15 @@ class CollageTab(QWidget):
 
     def _refresh_preset_state(self):
         current = f"{self._row_spin.value()}×{self._col_spin.value()}"
+        matched_preset = False
         for name, btn in self._preset_buttons.items():
-            btn.setChecked(name == current)
+            is_match = name == current
+            btn.setChecked(is_match)
+            if is_match:
+                matched_preset = True
+        blocker = QSignalBlocker(self._auto_adapt_btn)
+        self._auto_adapt_btn.setChecked(self._auto_adapt_active and not matched_preset)
+        del blocker
 
     def _refresh_mini_preview(self):
         while self._mini_grid.count():
@@ -1390,6 +1307,19 @@ class CollageTab(QWidget):
             background: {_GREEN};
             color: white;
             border-color: {_GREEN};
+        }}
+        QWidget#CollageTab QPushButton#auto_adapt_btn {{
+            background: #E8F8EE;
+            color: {_GREEN};
+            border: 1.5px dashed {_GREEN};
+            border-radius: 8px;
+            padding: 7px 10px;
+            font-weight: 600;
+        }}
+        QWidget#CollageTab QPushButton#auto_adapt_btn:checked {{
+            background: {_GREEN};
+            color: white;
+            border: 1.5px solid {_GREEN};
         }}
         QWidget#CollageTab QPushButton#primary {{
             background: {_GREEN};
