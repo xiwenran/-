@@ -30,9 +30,9 @@ pyinstaller \
   --name "$APP_NAME" \
   --hidden-import "PIL._tkinter_finder" \
   --hidden-import "av" \
-  --hidden-import "cv2" \
   --hidden-import "numpy" \
   --collect-all "av" \
+  --collect-all "cv2" \
   --collect-submodules "openai" \
   --noconfirm \
   --add-data "_build_info.py:." \

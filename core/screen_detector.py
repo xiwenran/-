@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-import cv2
 import numpy as np
 from PIL import Image
 
@@ -11,8 +10,19 @@ from PIL import Image
 PointList = list[list[float]]
 
 
+def _import_cv2():
+    try:
+        import cv2
+        return cv2
+    except ImportError:
+        return None
+
+
 def detect_screen_points(image) -> Optional[PointList]:
     """Detect screen quadrilateral points in TL, TR, BR, BL order."""
+    cv2 = _import_cv2()
+    if cv2 is None:
+        return None
     rgb = _load_rgb_array(image)
     if rgb is None:
         return None
@@ -21,11 +31,11 @@ def detect_screen_points(image) -> Optional[PointList]:
     dark_ratio = float(np.mean(gray < 30))
 
     if dark_ratio > 0.02:
-        points = _detect_solid_black_screen(gray)
+        points = _detect_solid_black_screen(cv2, gray)
         if points is not None:
             return points
 
-    return _detect_screen_edges(gray)
+    return _detect_screen_edges(cv2, gray)
 
 
 def _load_rgb_array(image) -> Optional[np.ndarray]:
@@ -41,7 +51,7 @@ def _load_rgb_array(image) -> Optional[np.ndarray]:
         return None
 
 
-def _detect_solid_black_screen(gray: np.ndarray) -> Optional[PointList]:
+def _detect_solid_black_screen(cv2, gray: np.ndarray) -> Optional[PointList]:
     h, w = gray.shape[:2]
     image_area = float(w * h)
     mask = np.where(gray < 30, 255, 0).astype(np.uint8)
@@ -60,7 +70,7 @@ def _detect_solid_black_screen(gray: np.ndarray) -> Optional[PointList]:
         area = cv2.contourArea(contour)
         if area < image_area * 0.01 or area > image_area * 0.95:
             continue
-        points = _quad_from_contour(contour)
+        points = _quad_from_contour(cv2, contour)
         if points is not None:
             candidates.append((area, points))
 
@@ -69,7 +79,7 @@ def _detect_solid_black_screen(gray: np.ndarray) -> Optional[PointList]:
     return _clamp_points(max(candidates, key=lambda item: item[0])[1], w, h)
 
 
-def _detect_screen_edges(gray: np.ndarray) -> Optional[PointList]:
+def _detect_screen_edges(cv2, gray: np.ndarray) -> Optional[PointList]:
     h, w = gray.shape[:2]
     image_area = float(w * h)
 
@@ -107,7 +117,7 @@ def _detect_screen_edges(gray: np.ndarray) -> Optional[PointList]:
     return _clamp_points(max(candidates, key=lambda item: item[0])[1], w, h)
 
 
-def _quad_from_contour(contour) -> Optional[PointList]:
+def _quad_from_contour(cv2, contour) -> Optional[PointList]:
     perimeter = cv2.arcLength(contour, True)
     if perimeter <= 0:
         return None
