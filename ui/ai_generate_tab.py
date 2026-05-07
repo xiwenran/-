@@ -49,7 +49,7 @@ _TEXT2 = "#888888"
 _RED = "#FA5151"
 
 _PERSONAL_SCENES = ["教师办公桌", "家里书桌", "校园办公室", "教研室", "居家备课", "宿舍"]
-_CLASSROOM_SCENES = ["小学教室", "中学教室", "多媒体教室", "报告厅"]
+_CLASSROOM_SCENES = ["小学教室", "中学教室", "多媒体教室"]
 
 
 class TagButton(QPushButton):

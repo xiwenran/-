@@ -38,6 +38,7 @@ def main():
     os.makedirs(templates_dir, exist_ok=True)
     os.makedirs(backgrounds_dir, exist_ok=True)
     os.makedirs(collages_dir, exist_ok=True)
+    os.makedirs(os.path.join(get_data_dir(), "ppt_export"), exist_ok=True)
 
     window = MainWindow(
         templates_dir=templates_dir,
