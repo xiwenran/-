@@ -6,12 +6,14 @@
 用法：
   python cli.py list-templates
   python cli.py process --input <文件夹或图片路径...> --templates <模板名...> --output <输出目录> [--format PNG|JPEG]
+  python cli.py process ... --cover-source <封面源路径>
 """
 
 import argparse
 import json
 import os
 import re
+import shutil
 import sys
 
 TEMPLATES_DIR = os.path.expanduser("~/Library/Application Support/融景/templates")
@@ -71,7 +73,88 @@ def collect_images(inputs: list[str]) -> list[str]:
     return images
 
 
-def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: str):
+# 封面文件名映射：源文件名 → 目标文件名
+_COVER_RENAME_MAP = [
+    ("0(1).jpg", "0.jpg"),
+    ("0(2).jpg", "0(1).jpg"),
+    ("0(3).jpg", "0(2).jpg"),
+]
+
+
+def _place_covers(output_root: str, cover_source: str):
+    """
+    将封面图复制到融景输出目录的每个模板子目录。
+
+    支持两种模式（自动识别）：
+    - 模式 A：cover_source 下直接有 0(1).jpg 等文件 → 复制到所有模板子目录
+    - 模式 B：cover_source 下有多个主题子目录 → 按主题名前 6 字符匹配后复制
+    """
+    cover_source = os.path.expanduser(cover_source)
+    if not os.path.isdir(cover_source):
+        print(f"[封面] 警告：封面源路径不存在，跳过：{cover_source}", file=sys.stderr)
+        return
+
+    has_covers_directly = any(
+        os.path.isfile(os.path.join(cover_source, src_n))
+        for src_n, _ in _COVER_RENAME_MAP
+    )
+
+    total_folders = 0
+    total_copied = 0
+    failed_topics = []
+
+    if has_covers_directly:
+        # 模式 A：output_root 下每个子目录都是模板目录
+        for tmpl_name in sorted(os.listdir(output_root), key=natural_sort_key):
+            tmpl_path = os.path.join(output_root, tmpl_name)
+            if not os.path.isdir(tmpl_path):
+                continue
+            total_folders += 1
+            for src_n, dst_n in _COVER_RENAME_MAP:
+                src = os.path.join(cover_source, src_n)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(tmpl_path, dst_n))
+                    total_copied += 1
+    else:
+        # 模式 B：cover_source 下有主题子目录，按名称前 6 字符匹配 output_root 下主题目录
+        cover_topics = [
+            d for d in os.listdir(cover_source)
+            if os.path.isdir(os.path.join(cover_source, d))
+        ]
+        output_topics = [
+            d for d in os.listdir(output_root)
+            if os.path.isdir(os.path.join(output_root, d))
+        ]
+        for ct in cover_topics:
+            matched = next(
+                (ot for ot in output_topics if ot[:6] == ct[:6]),
+                None
+            )
+            if not matched:
+                failed_topics.append(ct)
+                continue
+            topic_out = os.path.join(output_root, matched)
+            # topic_out 下每个子目录是模板目录
+            for tmpl_name in sorted(os.listdir(topic_out), key=natural_sort_key):
+                tmpl_path = os.path.join(topic_out, tmpl_name)
+                if not os.path.isdir(tmpl_path):
+                    continue
+                total_folders += 1
+                for src_n, dst_n in _COVER_RENAME_MAP:
+                    src = os.path.join(cover_source, ct, src_n)
+                    if os.path.isfile(src):
+                        shutil.copy2(src, os.path.join(tmpl_path, dst_n))
+                        total_copied += 1
+
+    print(f"\n封面放置完成：")
+    print(f"  处理 {total_folders} 个模板文件夹")
+    print(f"  复制 {total_copied} 张封面")
+    if failed_topics:
+        print(f"  匹配失败 {len(failed_topics)} 个主题：{', '.join(failed_topics)}")
+
+
+def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: str,
+            cover_source: str | None = None):
     # 延迟导入，避免系统没装 Pillow 时 list-templates 也报错
     sys.path.insert(0, os.path.dirname(__file__))
     from PIL import Image
@@ -115,6 +198,9 @@ def process(inputs: list[str], template_names: list[str], output_dir: str, fmt: 
 
     print(f"\n完成！共处理 {done} 张，输出目录：{output_dir}")
 
+    if cover_source:
+        _place_covers(output_dir, cover_source)
+
 
 def main():
     parser = argparse.ArgumentParser(description="融景命令行工具")
@@ -127,13 +213,16 @@ def main():
     p.add_argument("--templates", nargs="+", required=True, help="模板名称（可多个）")
     p.add_argument("--output", required=True, help="输出目录")
     p.add_argument("--format", default="JPEG", choices=["PNG", "JPEG"], help="输出格式（默认 JPEG）")
+    p.add_argument("--cover-source", default=None,
+                   help="封面源目录：单一目录（含 0(1).jpg/0(2).jpg/0(3).jpg）或多主题父目录（按名称前 6 字符匹配）")
 
     args = parser.parse_args()
 
     if args.cmd == "list-templates":
         list_templates()
     elif args.cmd == "process":
-        process(args.input, args.templates, args.output, args.format)
+        process(args.input, args.templates, args.output, args.format,
+                cover_source=args.cover_source)
     else:
         parser.print_help()
 
