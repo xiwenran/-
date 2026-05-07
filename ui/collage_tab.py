@@ -77,7 +77,6 @@ class CollageTab(QWidget):
         self._preview_collage_index = 0
         self._collage_runner: CollageBatchRunner | None = None
         self._cached_preview: Image.Image | None = None
-        self._compare_mode = False
         self._batch_mode = False
         self._subfolder_items: list[tuple[str, list[str]]] = []
 
@@ -105,6 +104,7 @@ class CollageTab(QWidget):
             cell_aspect_ratio=self._current_aspect_ratio(),
             output_width=1920,
             output_height=0,
+            output_count=self._output_count_spin.value() if hasattr(self, "_output_count_spin") else 0,
         )
 
     def set_config(self, tpl: CollageTemplate):
@@ -124,6 +124,8 @@ class CollageTab(QWidget):
         self._padding_spin.setValue(tpl.padding)
         self._aspect_combo.setCurrentText(self._aspect_label_for(tpl.cell_aspect_ratio))
         self._background_edit.setText(tpl.background_color)
+        if tpl.output_count > 0 and hasattr(self, "_output_count_spin"):
+            self._output_count_spin.setValue(tpl.output_count)
         self._update_color_swatch()
         self._refresh_preset_state()
         self._refresh_mini_preview()
@@ -361,6 +363,11 @@ class CollageTab(QWidget):
         self._collage_preview_label.setStyleSheet(
             f"background: {_CARD}; border: 1px solid {_SEP}; border-radius: 8px;"
         )
+        self._collage_preview_label.setMouseTracking(True)
+        self._collage_preview_label.mouseMoveEvent = self._on_preview_mouse_move
+        self._collage_preview_label.leaveEvent = self._on_preview_mouse_leave
+        self._original_pixmap: QPixmap | None = None
+        self._diversified_pixmap: QPixmap | None = None
         layout.addWidget(self._collage_preview_label, 1)
 
         nav_row = QHBoxLayout()
@@ -372,14 +379,8 @@ class CollageTab(QWidget):
         self._preview_info_label = self._label("", "hint")
         self._preview_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._compare_btn = QPushButton("对比差异化")
-        self._compare_btn.setCheckable(True)
-        self._compare_btn.setVisible(False)
-        self._compare_btn.clicked.connect(self._toggle_compare)
-
         nav_row.addWidget(self._preview_prev_btn)
         nav_row.addWidget(self._preview_info_label, 1)
-        nav_row.addWidget(self._compare_btn)
         nav_row.addWidget(self._preview_next_btn)
         layout.addLayout(nav_row)
 
@@ -564,6 +565,14 @@ class CollageTab(QWidget):
         if self._subfolder_items:
             self._subfolder_list.setCurrentRow(0)
             self._on_subfolder_selected(0)
+        elif self._scan_image_files(path):
+            answer = QMessageBox.question(
+                self, "切换模式",
+                "这个文件夹里直接就是图片，没有子文件夹。\n"
+                "要切换到「单个文件夹」模式吗？",
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                self._set_batch_mode(False)
 
     def _on_subfolder_selected(self, row: int):
         if row < 0 or row >= len(self._subfolder_items):
@@ -648,24 +657,26 @@ class CollageTab(QWidget):
             self._collage_preview_label.setText(f"预览失败：{exc}")
 
     def _display_preview(self, img: Image.Image):
-        if self._compare_mode:
-            cfg = self._diversify.get_config()
-            if cfg.enabled:
-                varied = diversify_image(img, cfg, seed=42)
-                w = img.width
-                combined = Image.new("RGB", (w * 2 + 4, img.height), (200, 200, 200))
-                combined.paste(img, (0, 0))
-                combined.paste(varied, (w + 4, 0))
-                img = combined
-
         label = self._collage_preview_label
         lw, lh = label.width() - 4, label.height() - 4
         if lw < 100 or lh < 100:
             lw, lh = 600, 400
         display = img.copy()
         display.thumbnail((lw, lh), Image.LANCZOS)
+        self._original_pixmap = self._pil_to_pixmap(display)
+
+        cfg = self._diversify.get_config()
+        if cfg.enabled:
+            import time
+            varied = diversify_image(img, cfg, seed=hash(time.time_ns()))
+            display_v = varied.copy()
+            display_v.thumbnail((lw, lh), Image.LANCZOS)
+            self._diversified_pixmap = self._pil_to_pixmap(display_v)
+        else:
+            self._diversified_pixmap = None
+
         label.setText("")
-        label.setPixmap(self._pil_to_pixmap(display))
+        label.setPixmap(self._original_pixmap)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -681,10 +692,32 @@ class CollageTab(QWidget):
             self._preview_collage_index = new_idx
             self._refresh_collage_preview()
 
-    def _toggle_compare(self):
-        self._compare_mode = self._compare_btn.isChecked()
-        if self._cached_preview:
-            self._display_preview(self._cached_preview)
+    def _on_preview_mouse_move(self, event):
+        if self._original_pixmap is None or self._diversified_pixmap is None:
+            return
+        from PyQt6.QtGui import QPainter, QPen
+        label = self._collage_preview_label
+        pm = label.pixmap()
+        if pm is None or pm.isNull():
+            return
+        x_ratio = event.position().x() / max(1, label.width())
+        split_x = int(x_ratio * self._original_pixmap.width())
+        split_x = max(0, min(split_x, self._original_pixmap.width()))
+        composite = self._original_pixmap.copy()
+        painter = QPainter(composite)
+        src_rect = composite.rect()
+        src_rect.setLeft(split_x)
+        painter.drawPixmap(src_rect, self._diversified_pixmap, src_rect)
+        pen = QPen(QColor(_GREEN))
+        pen.setWidth(2)
+        painter.setPen(pen)
+        painter.drawLine(split_x, 0, split_x, composite.height())
+        painter.end()
+        label.setPixmap(composite)
+
+    def _on_preview_mouse_leave(self, _event):
+        if self._original_pixmap is not None:
+            self._collage_preview_label.setPixmap(self._original_pixmap)
 
     # ── Thumbnails ────────────────────────────────────────────────
     def _refresh_thumbnails(self):
@@ -874,9 +907,6 @@ class CollageTab(QWidget):
         self._preview_prev_btn.setEnabled(self._preview_collage_index > 0)
         self._preview_next_btn.setEnabled(self._preview_collage_index < len(ranges) - 1)
 
-        cfg = self._diversify.get_config()
-        self._compare_btn.setVisible(cfg.enabled and self._cached_preview is not None)
-
         self._refresh_collage_preview()
 
     def _reset_output_count(self):
@@ -928,11 +958,6 @@ class CollageTab(QWidget):
             self.set_config(tpl)
 
     def _on_diversify_changed(self, _cfg):
-        cfg = self._diversify.get_config()
-        self._compare_btn.setVisible(cfg.enabled and self._cached_preview is not None)
-        if self._compare_mode and not cfg.enabled:
-            self._compare_mode = False
-            self._compare_btn.setChecked(False)
         if self._cached_preview:
             self._display_preview(self._cached_preview)
         self._emit_config_changed()
@@ -1119,6 +1144,15 @@ class CollageTab(QWidget):
             background: {_GREEN};
             color: white;
             border-color: {_GREEN};
+        }}
+        QWidget#CollageTab QPushButton#primary {{
+            background: {_GREEN};
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 7px 16px;
+            font-weight: 600;
+            font-size: 14px;
         }}
         QWidget#CollageTab QPushButton#danger {{
             color: {_RED};

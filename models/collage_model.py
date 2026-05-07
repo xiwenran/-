@@ -21,6 +21,7 @@ class CollageTemplate:
     cell_aspect_ratio: float
     output_width: int
     output_height: int
+    output_count: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -38,6 +39,7 @@ class CollageTemplate:
             cell_aspect_ratio=d["cell_aspect_ratio"],
             output_width=d["output_width"],
             output_height=d["output_height"],
+            output_count=d.get("output_count", 0),
         )
 
     @property

@@ -98,7 +98,8 @@ class CollageBatchRunner(QThread):
                 )
 
                 if self.diversify_config is not None and self.diversify_config.enabled:
-                    seed = hash(str(collage_idx) + self.output_dir)
+                    import time
+                    seed = hash((collage_idx, time.time_ns()))
                     result = diversify_image(result, self.diversify_config, seed=seed)
 
                 out_path = os.path.join(self.output_dir, f"拼图_{collage_idx}{ext}")
