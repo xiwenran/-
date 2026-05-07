@@ -367,6 +367,7 @@ class CollageTab(QWidget):
         self._auto_adapt_btn = QPushButton("✦  自动适配")
         self._auto_adapt_btn.setCheckable(True)
         self._auto_adapt_btn.setObjectName("auto_adapt_btn")
+        self._auto_adapt_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         adapt_row.addWidget(self._auto_adapt_btn)
         content.addLayout(adapt_row)
 
@@ -1029,6 +1030,7 @@ class CollageTab(QWidget):
     def _on_auto_adapt_clicked(self):
         selected_count = len(self._selected_image_files())
         if selected_count == 0:
+            self._auto_adapt_btn.setChecked(False)
             return
         rows, cols = calculate_auto_layout(selected_count)
         blockers = [QSignalBlocker(self._row_spin), QSignalBlocker(self._col_spin)]
@@ -1111,6 +1113,7 @@ class CollageTab(QWidget):
     def _on_template_item_clicked(self, item: QListWidgetItem):
         tpl = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(tpl, CollageTemplate):
+            self._auto_adapt_active = False
             self.set_config(tpl)
 
     def _on_diversify_changed(self, _cfg):
