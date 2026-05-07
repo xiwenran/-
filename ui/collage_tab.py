@@ -486,34 +486,83 @@ class CollageTab(QWidget):
             self._import_pptx(path)
 
     def _import_pptx(self, pptx_path: str):
+        import shutil
+
         export_dir = os.path.join(self._app_data_dir, "ppt_export", Path(pptx_path).stem)
+        if os.path.isdir(export_dir):
+            shutil.rmtree(export_dir, ignore_errors=True)
         os.makedirs(export_dir, exist_ok=True)
+
+        pdf_path = os.path.join(export_dir, "slides.pdf")
 
         script = (
             'tell application "Microsoft PowerPoint"\n'
             f'    open POSIX file "{pptx_path}"\n'
+            '    delay 2\n'
             '    set pres to active presentation\n'
-            f'    save pres in POSIX file "{export_dir}" as save as PNG\n'
+            f'    save pres in POSIX file "{pdf_path}" as save as PDF\n'
+            '    delay 1\n'
             '    close pres saving no\n'
             'end tell'
         )
-        self._input_path_label.setText(f"正在导出 PPT…")
+        self._input_path_label.setText("正在导出 PPT…")
         from PyQt6.QtWidgets import QApplication
         QApplication.processEvents()
 
-        result = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True, text=True, timeout=120,
-        )
-        if result.returncode != 0:
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True, text=True, timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            QMessageBox.warning(self, "PPT 导出超时", "PowerPoint 导出超过 2 分钟，请重试。")
+            self._input_path_label.setText("PPT 导出超时")
+            return
+
+        if result.returncode != 0 or not os.path.isfile(pdf_path):
             QMessageBox.warning(
                 self, "PPT 导出失败",
-                "无法调用 PowerPoint 导出图片。\n"
+                "无法调用 PowerPoint 导出 PDF。\n"
                 "请确认已安装 Microsoft PowerPoint for Mac。\n\n"
                 f"错误信息：{result.stderr[:200]}"
             )
             self._input_path_label.setText("PPT 导出失败")
             return
+
+        self._input_path_label.setText("正在转换为图片…")
+        QApplication.processEvents()
+
+        try:
+            result = subprocess.run(
+                ["pdftoppm", "-png", "-r", "200", pdf_path,
+                 os.path.join(export_dir, "slide")],
+                capture_output=True, text=True, timeout=120,
+            )
+        except FileNotFoundError:
+            QMessageBox.warning(
+                self, "缺少 poppler",
+                "未找到 pdftoppm 命令。\n请在终端执行：brew install poppler"
+            )
+            self._input_path_label.setText("缺少 poppler")
+            return
+        except subprocess.TimeoutExpired:
+            QMessageBox.warning(self, "图片转换超时", "PDF 转 PNG 超过 2 分钟，请重试。")
+            self._input_path_label.setText("图片转换超时")
+            return
+
+        if result.returncode != 0:
+            QMessageBox.warning(
+                self, "图片转换失败",
+                "PDF 转 PNG 失败。请确认已安装 poppler（brew install poppler）。\n\n"
+                f"错误信息：{result.stderr[:200]}"
+            )
+            self._input_path_label.setText("图片转换失败")
+            return
+
+        try:
+            os.remove(pdf_path)
+        except OSError:
+            pass
 
         self._set_input_dir(export_dir)
 
