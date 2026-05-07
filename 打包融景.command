@@ -53,8 +53,8 @@ DMG_OUT="dist/$DMG_NAME"
 rm -rf "$DMG_TMP" "$DMG_OUT"
 mkdir -p "$DMG_TMP"
 
-# 复制 .app 到临时目录
-cp -r "dist/$APP_NAME.app" "$DMG_TMP/"
+# 复制 .app 到临时目录（ditto 保留符号链接和元数据，cp -r 会破坏 Bundle 结构）
+ditto "dist/$APP_NAME.app" "$DMG_TMP/$APP_NAME.app"
 
 # 创建 .dmg（使用 macOS 内置 hdiutil，无需额外工具）
 hdiutil create \
