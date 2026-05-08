@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import random
+import shutil
 import time
 from typing import Iterable
 
@@ -13,6 +15,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -47,6 +50,7 @@ _SEP = "#E5E5E5"
 _TEXT = "#191919"
 _TEXT2 = "#888888"
 _RED = "#FA5151"
+_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".rongjing", "ai_cache")
 
 _PERSONAL_SCENES = ["教师办公桌", "家里书桌", "校园办公室", "教研室", "居家备课", "宿舍"]
 _CLASSROOM_SCENES = ["小学教室", "中学教室", "多媒体教室"]
@@ -165,6 +169,158 @@ class _GenerateWorker(QThread):
             self.finished_ok.emit(images)
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+class _HistoryDialog(QDialog):
+    """历史生成记录对话框。"""
+    load_requested = pyqtSignal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("历史生成记录")
+        self.setMinimumSize(640, 480)
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        header = QLabel("历史生成记录")
+        header.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {_TEXT};")
+        layout.addWidget(header)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._list_widget = QWidget()
+        self._list_layout = QVBoxLayout(self._list_widget)
+        self._list_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._list_layout.setSpacing(8)
+        scroll.setWidget(self._list_widget)
+        layout.addWidget(scroll, 1)
+
+        bottom = QHBoxLayout()
+        open_btn = QPushButton("📂 在 Finder 中打开")
+        open_btn.clicked.connect(self._open_in_finder)
+        clear_btn = QPushButton("🗑 清除所有历史")
+        clear_btn.clicked.connect(self._clear_all)
+        bottom.addWidget(open_btn)
+        bottom.addStretch()
+        bottom.addWidget(clear_btn)
+        layout.addLayout(bottom)
+
+        self._refresh_list()
+
+    def _refresh_list(self):
+        while self._list_layout.count():
+            item = self._list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not os.path.isdir(_CACHE_DIR):
+            self._list_layout.addWidget(QLabel("暂无历史记录"))
+            return
+
+        batches = sorted(
+            [d for d in os.listdir(_CACHE_DIR)
+             if os.path.isdir(os.path.join(_CACHE_DIR, d))],
+            reverse=True,
+        )
+        if not batches:
+            self._list_layout.addWidget(QLabel("暂无历史记录"))
+            return
+
+        for batch_name in batches:
+            batch_dir = os.path.join(_CACHE_DIR, batch_name)
+            imgs = sorted(f for f in os.listdir(batch_dir) if f.lower().endswith((".png", ".jpg")))
+            if not imgs:
+                continue
+
+            try:
+                ts = time.strptime(batch_name, "%Y%m%d_%H%M%S")
+                display_time = time.strftime("%Y-%m-%d %H:%M:%S", ts)
+            except ValueError:
+                display_time = batch_name
+
+            # 读取 meta 信息
+            meta_path = os.path.join(batch_dir, "meta.json")
+            meta_info = ""
+            if os.path.exists(meta_path):
+                try:
+                    with open(meta_path, encoding="utf-8") as f:
+                        meta = json.load(f)
+                    device = meta.get("device", "")
+                    scene = meta.get("scene", "")
+                    if device or scene:
+                        meta_info = f"  ·  {device} {scene}".strip()
+                except Exception:
+                    pass
+
+            card = QFrame()
+            card.setStyleSheet(
+                "QFrame { background: white; border: 1px solid #E5E5E5; border-radius: 8px; }"
+            )
+            card_layout = QHBoxLayout(card)
+            card_layout.setContentsMargins(10, 8, 10, 8)
+            card_layout.setSpacing(10)
+
+            # 缩略图
+            thumb_label = QLabel()
+            thumb_label.setFixedSize(56, 56)
+            pix = QPixmap(os.path.join(batch_dir, imgs[0]))
+            if not pix.isNull():
+                pix = pix.scaled(56, 56, Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation)
+                thumb_label.setPixmap(pix)
+            card_layout.addWidget(thumb_label)
+
+            info_label = QLabel(f"{display_time}{meta_info}\n{len(imgs)} 张图片")
+            info_label.setStyleSheet(f"color: {_TEXT}; font-size: 13px; border: none;")
+            card_layout.addWidget(info_label, 1)
+
+            load_btn = QPushButton("加载")
+            load_btn.setFixedWidth(56)
+            load_btn.setStyleSheet(
+                f"background: {_GREEN}; color: white; border: none; border-radius: 6px; padding: 6px;"
+            )
+            load_btn.clicked.connect(lambda _=False, bd=batch_dir: self._load_batch(bd))
+            card_layout.addWidget(load_btn)
+
+            del_btn = QPushButton("删除")
+            del_btn.setFixedWidth(56)
+            del_btn.setStyleSheet(
+                "background: #F5F5F5; color: #999; border: none; border-radius: 6px; padding: 6px;"
+            )
+            del_btn.clicked.connect(lambda _=False, bd=batch_dir: self._delete_batch(bd))
+            card_layout.addWidget(del_btn)
+
+            self._list_layout.addWidget(card)
+
+    def _load_batch(self, batch_dir: str):
+        images: list[Image.Image] = []
+        for f in sorted(os.listdir(batch_dir)):
+            if f.lower().endswith((".png", ".jpg")):
+                images.append(Image.open(os.path.join(batch_dir, f)).copy())
+        if images:
+            self.load_requested.emit(images)
+            self.accept()
+
+    def _delete_batch(self, batch_dir: str):
+        reply = QMessageBox.question(self, "确认删除", "确定要删除这条历史记录吗？")
+        if reply == QMessageBox.StandardButton.Yes:
+            shutil.rmtree(batch_dir, ignore_errors=True)
+            self._refresh_list()
+
+    def _open_in_finder(self):
+        os.makedirs(_CACHE_DIR, exist_ok=True)
+        os.system(f'open "{_CACHE_DIR}"')
+
+    def _clear_all(self):
+        reply = QMessageBox.question(self, "确认清除", "确定要清除所有历史记录吗？不可恢复。")
+        if reply == QMessageBox.StandardButton.Yes:
+            shutil.rmtree(_CACHE_DIR, ignore_errors=True)
+            self._refresh_list()
 
 
 class _ImageTile(QFrame):
@@ -394,6 +550,13 @@ class AIGenerateTab(QWidget):
         self._generate_btn.setObjectName("primary")
         self._generate_btn.setFixedHeight(44)
         bottom_layout.addWidget(self._generate_btn)
+        self._history_btn = QPushButton("📂 历史记录")
+        self._history_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._history_btn.setStyleSheet(
+            f"background: transparent; color: {_TEXT2}; border: none; "
+            f"font-size: 12px; padding: 4px;"
+        )
+        bottom_layout.addWidget(self._history_btn)
         hint = _label("API 配置在「设置」页自动保存。", "hint")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         bottom_layout.addWidget(hint)
@@ -451,6 +614,7 @@ class AIGenerateTab(QWidget):
         self._device_group.selection_changed.connect(self._on_device_changed)
         self._random_btn.clicked.connect(lambda: self._random_select_unset())
         self._generate_btn.clicked.connect(self._generate)
+        self._history_btn.clicked.connect(self._show_history)
         self._save_btn.clicked.connect(self._save_selected)
 
     def _on_device_changed(self, value: str):
@@ -482,16 +646,21 @@ class AIGenerateTab(QWidget):
         if scene:
             parts.append(self._TRANSLATIONS.get(scene, scene))
 
-        # 笔记本/台式机：屏幕必须是画面主体，占 60-70% 面积
-        if device in ("笔记本", "台式机"):
+        # 笔记本/台式机/希沃一体机：屏幕必须是画面主体，占 60-70% 面积
+        if device in ("笔记本", "台式机", "希沃一体机"):
             parts.append("the screen is the dominant element filling 60-70% of the frame")
             parts.append("close-up composition focused on the screen, minimal surrounding environment")
 
         # Chinese context — classroom vs personal
         if is_classroom:
             parts.append("Chinese school classroom with red Chinese national flag hanging on wall above the screen")
-            parts.append("red educational banners with Chinese calligraphy slogans on the wall")
-            parts.append("green chalkboard visible on the sides of the screen")
+            if device == "希沃一体机":
+                # 希沃一体机：墙面和黑板保持干净，不要手写字
+                parts.append("clean plain classroom walls, no calligraphy, no handwritten text, no chalk writing anywhere")
+                parts.append("if chalkboard is visible it must be completely clean and blank")
+            else:
+                parts.append("red educational banners with Chinese calligraphy slogans on the wall")
+                parts.append("green chalkboard visible on the sides of the screen")
         else:
             parts.append("Chinese domestic or office setting")
 
@@ -546,6 +715,7 @@ class AIGenerateTab(QWidget):
 
     def _on_generate_ok(self, images: list):
         self._images = images
+        self._save_to_cache(images)
         self._render_results()
 
     def _on_generate_failed(self, error: str):
@@ -556,6 +726,35 @@ class AIGenerateTab(QWidget):
         self._generate_btn.setEnabled(True)
         self._generate_btn.setText("✨ 开始生成")
         self._gen_worker = None
+
+    # ── 历史记录 ────────────────────────────────────────────────
+
+    def _save_to_cache(self, images: list):
+        """将生成的图片自动保存到本地缓存目录。"""
+        batch_dir = os.path.join(_CACHE_DIR, time.strftime("%Y%m%d_%H%M%S"))
+        os.makedirs(batch_dir, exist_ok=True)
+        for i, img in enumerate(images, 1):
+            img.save(os.path.join(batch_dir, f"{i}.png"))
+        # 保存 meta 信息
+        meta = {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "device": self._device_group.get_selection(),
+            "scene": self._scene_group.get_selection(),
+            "count": len(images),
+            "aspect_ratio": self._aspect_combo.currentText(),
+        }
+        with open(os.path.join(batch_dir, "meta.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+
+    def _show_history(self):
+        dlg = _HistoryDialog(self)
+        dlg.load_requested.connect(self._load_history_images)
+        dlg.exec()
+
+    def _load_history_images(self, images: list):
+        """从历史记录加载图片到预览区。"""
+        self._images = images
+        self._render_results()
 
     def _render_results(self):
         self._clear_results()
