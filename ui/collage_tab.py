@@ -276,8 +276,6 @@ class CollageTab(QWidget):
         content.addWidget(self._sep())
         self._add_layout_section(content)
         content.addWidget(self._sep())
-        self._add_split_section(content)
-        content.addWidget(self._sep())
         self._add_template_section(content)
         content.addWidget(self._sep())
         content.addWidget(self._label("批次差异化", "h2"))
@@ -366,6 +364,8 @@ class CollageTab(QWidget):
         grid = QGridLayout()
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(8)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
         self._row_spin = self._spin(1, 4, 3)
         self._col_spin = self._spin(1, 6, 4)
         self._gap_spin = self._spin(0, 20, 4)
@@ -374,11 +374,7 @@ class CollageTab(QWidget):
         self._add_grid_field(grid, 0, 1, "列数", self._col_spin)
         self._add_grid_field(grid, 1, 0, "间距 (px)", self._gap_spin)
         self._add_grid_field(grid, 1, 1, "边距 (px)", self._padding_spin)
-        content.addLayout(grid)
 
-        lower_grid = QGridLayout()
-        lower_grid.setHorizontalSpacing(10)
-        lower_grid.setVerticalSpacing(8)
         self._aspect_combo = QComboBox()
         self._aspect_combo.addItems(_ASPECTS.keys())
         self._aspect_combo.setCurrentText("自适应")
@@ -394,26 +390,28 @@ class CollageTab(QWidget):
         bg_row.setSpacing(6)
         bg_row.addWidget(self._background_edit, 1)
         bg_row.addWidget(self._color_swatch, 0)
-        self._add_grid_field(lower_grid, 0, 0, "单元格比例", self._aspect_combo)
-        self._add_grid_field(lower_grid, 0, 1, "背景色", bg_row)
-        content.addLayout(lower_grid)
-        self._update_color_swatch()
+        self._add_grid_field(grid, 2, 0, "单元格比例", self._aspect_combo)
+        self._add_grid_field(grid, 2, 1, "背景色", bg_row)
 
-        color_presets = QHBoxLayout()
-        color_presets.setSpacing(4)
+        color_presets_row = QHBoxLayout()
+        color_presets_row.setSpacing(2)
+        color_presets_row.setContentsMargins(0, 0, 0, 0)
         for hex_color, tip in _BG_COLORS:
-            swatch = QLabel()
-            swatch.setFixedSize(24, 24)
+            swatch = QWidget()
+            swatch.setFixedHeight(28)
+            swatch.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             swatch.setCursor(Qt.CursorShape.PointingHandCursor)
             swatch.setToolTip(f"{tip} ({hex_color})")
-            border = f"border: 1.5px solid {_SEP};" if hex_color != "#FFFFFF" else f"border: 1.5px solid #CCC;"
+            border_color = "#CCC" if hex_color == "#FFFFFF" else _SEP
             swatch.setStyleSheet(
-                f"background: {hex_color}; {border} border-radius: 4px;"
+                f"background: {hex_color}; border: 1px solid {border_color}; border-radius: 3px;"
             )
             swatch.mousePressEvent = lambda event, c=hex_color: self._set_bg_color(c)
-            color_presets.addWidget(swatch)
-        color_presets.addStretch()
-        content.addLayout(color_presets)
+            color_presets_row.addWidget(swatch, 1)
+        grid.addLayout(color_presets_row, 3, 0, 1, 2)
+
+        content.addLayout(grid)
+        self._update_color_swatch()
 
         self._mini_preview_label = self._label("", "cap")
         content.addWidget(self._mini_preview_label)
@@ -424,22 +422,23 @@ class CollageTab(QWidget):
         self._mini_grid.setSpacing(5)
         content.addWidget(self._mini_grid_frame)
 
-    def _add_split_section(self, content: QVBoxLayout):
-        content.addWidget(self._label("自动拆分", "h2"))
-
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        row.addWidget(self._label("输出", "cap"))
+        split_grid = QGridLayout()
+        split_grid.setHorizontalSpacing(10)
+        split_grid.setVerticalSpacing(8)
+        split_grid.setColumnStretch(0, 1)
+        split_grid.setColumnStretch(1, 1)
+        split_out_row = QHBoxLayout()
+        split_out_row.setSpacing(6)
         self._output_count_spin = self._spin(1, 1, 1)
         self._output_count_spin.setFixedWidth(70)
-        row.addWidget(self._output_count_spin)
+        split_out_row.addWidget(self._output_count_spin)
         self._pages_per_label = self._label("张，每张 0 页", "cap")
-        row.addWidget(self._pages_per_label)
-        row.addStretch(1)
-        content.addLayout(row)
-
+        split_out_row.addWidget(self._pages_per_label)
+        split_out_row.addStretch(1)
         self._selected_pages_label = self._label("已选 0/0 页", "hint")
-        content.addWidget(self._selected_pages_label)
+        self._add_grid_field(split_grid, 0, 0, "自动拆分", split_out_row)
+        self._add_grid_field(split_grid, 0, 1, "", self._selected_pages_label)
+        content.addLayout(split_grid)
 
     def _add_template_section(self, content: QVBoxLayout):
         content.addWidget(self._label("拼图模板", "h2"))
