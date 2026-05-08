@@ -57,6 +57,17 @@ _ASPECTS = {
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
 
+_BG_COLORS = [
+    ("#FFFFFF", "白色"),
+    ("#F5F5F5", "浅灰"),
+    ("#E0E0E0", "灰色"),
+    ("#000000", "黑色"),
+    ("#FFF8E1", "米黄"),
+    ("#E8F5E9", "浅绿"),
+    ("#E3F2FD", "浅蓝"),
+    ("#FCE4EC", "浅粉"),
+]
+
 
 class _PPTImportWorker(QThread):
     progress = pyqtSignal(str)
@@ -388,6 +399,22 @@ class CollageTab(QWidget):
         content.addLayout(lower_grid)
         self._update_color_swatch()
 
+        color_presets = QHBoxLayout()
+        color_presets.setSpacing(4)
+        for hex_color, tip in _BG_COLORS:
+            swatch = QLabel()
+            swatch.setFixedSize(24, 24)
+            swatch.setCursor(Qt.CursorShape.PointingHandCursor)
+            swatch.setToolTip(f"{tip} ({hex_color})")
+            border = f"border: 1.5px solid {_SEP};" if hex_color != "#FFFFFF" else f"border: 1.5px solid #CCC;"
+            swatch.setStyleSheet(
+                f"background: {hex_color}; {border} border-radius: 4px;"
+            )
+            swatch.mousePressEvent = lambda event, c=hex_color: self._set_bg_color(c)
+            color_presets.addWidget(swatch)
+        color_presets.addStretch()
+        content.addLayout(color_presets)
+
         self._mini_preview_label = self._label("", "cap")
         content.addWidget(self._mini_preview_label)
         self._mini_grid_frame = QWidget()
@@ -616,6 +643,8 @@ class CollageTab(QWidget):
 
     def _on_ppt_import_progress(self, msg: str):
         self._input_path_label.setText(msg)
+        self._collage_preview_label.setPixmap(QPixmap())
+        self._collage_preview_label.setText(f"📎 PPT 导入中\n\n{msg}\n\n如需授权 PowerPoint，请切换到 PowerPoint 窗口点击允许")
 
     def _on_ppt_import_done(self, export_dir: str):
         self._set_input_dir(export_dir)
@@ -625,6 +654,7 @@ class CollageTab(QWidget):
         title, _, message = error.partition("\n")
         QMessageBox.warning(self, title or "PPT 导入失败", message or error)
         self._input_path_label.setText(title or "PPT 导入失败")
+        self._collage_preview_label.setText("选择文件夹或拖入 PPT 开始预览")
         self._restore_ppt_import_buttons()
 
     def _restore_ppt_import_buttons(self):
@@ -1013,7 +1043,9 @@ class CollageTab(QWidget):
         if selected_count == 0:
             self._auto_adapt_btn.setChecked(False)
             return
-        rows, cols = calculate_auto_layout(selected_count)
+        output_count = self._output_count_spin.value() if hasattr(self, "_output_count_spin") else 1
+        per_collage = math.ceil(selected_count / max(1, output_count))
+        rows, cols = calculate_auto_layout(per_collage)
         blockers = [QSignalBlocker(self._row_spin), QSignalBlocker(self._col_spin)]
         self._row_spin.setValue(rows)
         self._col_spin.setValue(cols)
@@ -1132,6 +1164,9 @@ class CollageTab(QWidget):
         if self._current_collage and self._current_collage.name == name:
             self._current_collage = None
         self._load_template_list()
+
+    def _set_bg_color(self, hex_color: str):
+        self._background_edit.setText(hex_color)
 
     def _choose_background_color(self):
         color = QColorDialog.getColor(QColor(self._background_edit.text()), self, "选择背景色")

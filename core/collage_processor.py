@@ -129,23 +129,34 @@ def calculate_auto_layout(num_images: int) -> tuple[int, int]:
     """
     if num_images <= 0:
         return (1, 1)
+    if num_images == 1:
+        return (1, 1)
 
-    best: tuple[tuple[int, int, float, int], tuple[int, int]] | None = None
-    for rows in range(1, 5):
-        for cols in range(1, 5):
+    best: tuple[tuple[float, ...], tuple[int, int]] | None = None
+    for rows in range(1, 5):          # 行数上限 4（与 UI _row_spin 一致）
+        for cols in range(1, 7):      # 列数上限 6（与 UI _col_spin 一致）
             cells = rows * cols
             if cells < num_images:
                 continue
             waste = cells - num_images
-            landscape_penalty = 1 if rows < cols else 0
-            ratio_distance = abs((rows / cols) - 1.5)
-            col_penalty = 0 if cols <= 2 else cols - 2
-            score = (waste, landscape_penalty, ratio_distance, col_penalty)
+            # 综合评分：竖版优先，但不能为了竖版浪费太多格子
+            ratio_distance = abs((rows / cols) - 1.333)  # 接近 4:3 竖版比例
+            # 极端比例惩罚：单行或单列的超长条不实用
+            extreme_penalty = 0.6 if (rows == 1 and cols >= 3) or (cols == 1 and rows >= 3) else 0
+            # 方向得分 + waste 得分 合并为主排序键
+            # 竖版(rows>cols): orientation_cost=0
+            # 正方(rows==cols): orientation_cost=0.5
+            # 横版(rows<cols): orientation_cost=2
+            orientation_cost = 0 if rows > cols else (0.5 if rows == cols else 2)
+            # waste 代价：每个空格 0.4 分
+            waste_cost = waste * 0.4
+            primary = orientation_cost + waste_cost + extreme_penalty
+            score = (primary, ratio_distance)
             if best is None or score < best[0]:
                 best = (score, (rows, cols))
 
     if best is None:
-        return (4, 4)
+        return (4, 6)
     return best[1]
 
 
