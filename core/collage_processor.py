@@ -109,15 +109,15 @@ def calculate_auto_split(
     max_capacity = total_output_images * cells_per_collage
     used_pages = min(total_pages, max_capacity)
 
-    per_image = used_pages // total_output_images
-    remainder = used_pages % total_output_images
-
+    # 前满后补：每张先填满 cells_per_collage，仅最后一张放剩余
     ranges = []
     cursor = 0
-    for i in range(total_output_images):
-        count = per_image + (1 if i < remainder else 0)
-        ranges.append((cursor, cursor + count))
-        cursor += count
+    for _ in range(total_output_images):
+        if cursor >= used_pages:
+            break
+        end = min(cursor + cells_per_collage, used_pages)
+        ranges.append((cursor, end))
+        cursor = end
     return ranges
 
 

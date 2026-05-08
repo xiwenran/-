@@ -150,8 +150,9 @@ class _ImageTile(QFrame):
         self._image = image
         self._aspect_ratio = aspect_ratio
         self.setObjectName("imageTile")
-        self.setMinimumSize(220, 160)
+        self.setMinimumSize(320, 220)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         layout = QGridLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -162,9 +163,11 @@ class _ImageTile(QFrame):
         self._label.setScaledContents(False)
         self._check = QCheckBox()
         self._check.setChecked(True)
+        self._check.toggled.connect(self._update_selection_style)
         layout.addWidget(self._label, 0, 0)
         layout.addWidget(self._check, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
         self._refresh_pixmap()
+        self._update_selection_style()
 
     def is_checked(self) -> bool:
         return self._check.isChecked()
@@ -180,6 +183,20 @@ class _ImageTile(QFrame):
     def hasHeightForWidth(self) -> bool:
         return True
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._check.setChecked(not self._check.isChecked())
+        super().mousePressEvent(event)
+
+    def _update_selection_style(self, _checked=True):
+        if self._check.isChecked():
+            self.setProperty("selected", True)
+        else:
+            self.setProperty("selected", False)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
     def _refresh_pixmap(self):
         pix = _pil_to_pixmap(self._image)
         target = self._label.size()
@@ -192,33 +209,32 @@ class AIGenerateTab(QWidget):
     save_finished = pyqtSignal(list)
 
     _TRANSLATIONS = {
-        "笔记本": "a laptop computer",
-        "台式机": "a desktop monitor",
-        "希沃一体机": "a large interactive classroom display",
-        "教师办公桌": "on a teacher's office desk",
-        "家里书桌": "on a home study desk",
-        "校园办公室": "in a campus office",
-        "教研室": "in a teaching research office",
+        "笔记本": "a laptop computer (MacBook Pro or Lenovo ThinkPad)",
+        "台式机": "a desktop computer monitor on a desk",
+        "希沃一体机": "a large Seewo brand interactive touchscreen display mounted on the classroom wall",
+        "教师办公桌": "on a teacher's office desk in a Chinese school",
+        "家里书桌": "on a home study desk in a Chinese household",
+        "校园办公室": "in a Chinese school campus office",
+        "教研室": "in a Chinese teaching research office",
         "居家备课": "at a home lesson-preparation desk",
-        "宿舍": "in a dorm room",
-        "小学教室": "in an elementary school classroom",
-        "中学教室": "in a middle school classroom",
-        "多媒体教室": "in a multimedia classroom",
-        "报告厅": "in an auditorium",
-        "暖色灯光": "warm ambient lighting",
-        "自然光": "natural daylight",
+        "宿舍": "in a Chinese student dorm room",
+        "小学教室": "in a Chinese elementary school classroom",
+        "中学教室": "in a Chinese middle school classroom",
+        "多媒体教室": "in a Chinese multimedia classroom",
+        "暖色灯光": "warm amber ambient lighting",
+        "自然光": "natural daylight from window",
         "冷白光": "cool white office lighting",
         "柔光": "soft diffused light",
-        "偏暗氛围": "dim atmospheric lighting",
+        "偏暗氛围": "dim moody atmospheric lighting",
         "正面平视": "front eye-level camera angle",
         "略偏侧角": "slightly side camera angle",
         "略微俯视": "slightly top-down camera angle",
         "略微仰视": "slightly low-angle camera angle",
-        "有植物": "with a small plant on the desk",
-        "有咖啡杯": "with a coffee cup on the desk",
-        "有书本": "with books and notebooks on the desk",
-        "有小摆件": "with small desktop ornaments",
-        "极简": "minimal clean desktop",
+        "有植物": "with a small potted plant on the desk",
+        "有咖啡杯": "with a coffee cup or tea cup on the desk",
+        "有书本": "with Chinese textbooks and exercise notebooks on the desk",
+        "有小摆件": "with a small rubber duck or cute figurine on the desk",
+        "极简": "minimal clean desktop with nothing extra",
     }
 
     def __init__(self, backgrounds_dir: str, parent=None):
@@ -253,8 +269,14 @@ class AIGenerateTab(QWidget):
                 background: {_GREEN}; color: white; border: none;
                 border-radius: 22px; padding: 10px 16px; font-weight: 700;
             }}
-            QFrame#aiCard, QFrame#imageTile {{
+            QFrame#aiCard {{
                 background: {_CARD}; border: 1px solid {_SEP}; border-radius: 10px;
+            }}
+            QFrame#imageTile {{
+                background: {_CARD}; border: 2px solid {_GREEN}; border-radius: 10px;
+            }}
+            QFrame#imageTile[selected="false"] {{
+                border: 1px solid {_SEP};
             }}
             QLabel#imagePreview {{ background: {_INPUT}; border-radius: 8px; }}
             """
@@ -324,8 +346,8 @@ class AIGenerateTab(QWidget):
         aspect_layout.setSpacing(4)
         aspect_layout.addWidget(_label("图片比例", "cap"))
         self._aspect_combo = QComboBox()
-        self._aspect_combo.addItems(["4:3", "3:4", "1:1", "16:9"])
-        self._aspect_combo.setCurrentText("4:3")
+        self._aspect_combo.addItems(["3:4", "4:3", "1:1", "16:9"])
+        self._aspect_combo.setCurrentText("3:4")
         aspect_layout.addWidget(self._aspect_combo)
         row.addWidget(count_box)
         row.addWidget(aspect_box)
@@ -364,7 +386,7 @@ class AIGenerateTab(QWidget):
         self._empty_label = _label("生成后在这里预览结果。", "hint")
         results_card.layout().addWidget(self._empty_label)
         results_card.layout().addLayout(self._results_grid)
-        layout.addWidget(results_card)
+        layout.addWidget(results_card, 1)
 
         save_card = _card("保存为模板")
         save_card.layout().addWidget(_label("勾选需要保留的图片，保存后跳转到模板配置页标注屏幕四角。", "hint"))
@@ -373,7 +395,6 @@ class AIGenerateTab(QWidget):
         self._save_btn.setEnabled(False)
         save_card.layout().addWidget(self._save_btn)
         layout.addWidget(save_card)
-        layout.addStretch(1)
         scroll.setWidget(body)
         return scroll
 
@@ -396,19 +417,50 @@ class AIGenerateTab(QWidget):
                 group.random_select(rng)
 
     def _build_prompt(self) -> str:
+        device = self._device_group.get_selection()
+        scene = self._scene_group.get_selection()
+        is_classroom = device == "希沃一体机" or scene in _CLASSROOM_SCENES
+
         parts = [
-            "A realistic photo background for PPT screen compositing",
-            "screen displays solid black",
-            "no text, no logo, no watermark",
+            "A candid realistic photograph shot on a smartphone camera",
+            "authentic everyday scene with natural imperfections",
+            "subtle depth of field, natural lighting variations, slight film grain",
         ]
-        for group in self._tag_groups:
-            selection = group.get_selection()
-            if selection:
-                parts.append(self._TRANSLATIONS.get(selection, selection))
+
+        # Device & scene
+        if device:
+            parts.append(self._TRANSLATIONS.get(device, device))
+        if scene:
+            parts.append(self._TRANSLATIONS.get(scene, scene))
+
+        # Chinese context — classroom vs personal
+        if is_classroom:
+            parts.append("Chinese school classroom with red Chinese national flag hanging on wall above the screen")
+            parts.append("red educational banners with Chinese calligraphy slogans on the wall")
+            parts.append("green chalkboard visible on the sides of the screen")
+        else:
+            parts.append("Chinese domestic or office setting")
+
+        # Screen — must be clean for compositing
+        parts.append("screen displays completely solid matte black, absolutely no reflections, no glare, no ambient light on screen surface")
+
+        # Lighting, angle, decor
+        for group in self._tag_groups[2:]:
+            sel = group.get_selection()
+            if sel:
+                parts.append(self._TRANSLATIONS.get(sel, sel))
+
+        # Extra user description
         extra = self._extra_edit.text().strip()
         if extra:
             parts.append(extra)
-        parts.append("clean composition, screen corners clearly visible, realistic perspective")
+
+        # Constraints
+        parts.append("absolutely no English text, signs, diplomas, or labels anywhere in the scene")
+        parts.append("all visible text and signage must be in simplified Chinese only")
+        parts.append("no watermark, no logo on screen")
+        parts.append("screen corners clearly visible, clean composition, realistic perspective")
+        parts.append("NOT an AI-generated image, looks like a real phone photo, natural and authentic")
         return ", ".join(parts)
 
     def _generate(self):
@@ -445,10 +497,11 @@ class AIGenerateTab(QWidget):
         self._clear_results()
         self._empty_label.setVisible(not self._images)
         aspect = self._aspect_combo.currentText()
+        cols = 1 if len(self._images) <= 2 else 2
         for idx, image in enumerate(self._images):
             tile = _ImageTile(image, aspect)
             self._tiles.append(tile)
-            self._results_grid.addWidget(tile, idx // 2, idx % 2)
+            self._results_grid.addWidget(tile, idx // cols, idx % cols)
         self._save_btn.setEnabled(bool(self._images))
 
     def _clear_results(self):

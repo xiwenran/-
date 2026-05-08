@@ -838,7 +838,7 @@ class CollageTab(QWidget):
         new_idx = self._preview_collage_index + delta
         if 0 <= new_idx < len(ranges):
             self._preview_collage_index = new_idx
-            self._refresh_collage_preview()
+            self._refresh_state()
 
     def _on_preview_mouse_move(self, event):
         if self._original_pixmap is None or self._diversified_pixmap is None:

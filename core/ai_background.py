@@ -138,7 +138,10 @@ def generate_backgrounds(
                 img = Image.open(io.BytesIO(r.read()))
         else:
             raise AIBackgroundError("API 返回格式无法解析（无 b64_json 也无 url）")
-        images.append(img.copy())
+        # 创建全新图片只保留像素数据，彻底剥离 C2PA / EXIF 等所有元数据
+        clean = Image.new(img.mode, img.size)
+        clean.paste(img)
+        images.append(clean)
 
     return images
 

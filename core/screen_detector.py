@@ -100,7 +100,7 @@ def _detect_solid_black_screen(cv2, gray: np.ndarray) -> Optional[PointList]:
         # Prefer low interior variance (uniform = screen), break ties by area
         candidates.sort(key=lambda item: (item[0], -item[1]))
         best_std, best_area, best_points = candidates[0]
-        if best_std < 25:
+        if best_std < 40:
             return _clamp_points(best_points, w, h)
 
     return None
