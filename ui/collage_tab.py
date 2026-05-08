@@ -268,6 +268,7 @@ class CollageTab(QWidget):
 
         body = QWidget()
         body.setObjectName("collage_scroll_body")
+        body.setMaximumWidth(340)
         content = QVBoxLayout(body)
         content.setContentsMargins(16, 18, 16, 18)
         content.setSpacing(10)
