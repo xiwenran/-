@@ -74,12 +74,13 @@ class _PPTImportWorker(QThread):
 
         script = (
             'on run argv\n'
-            '    set pptxPath to item 1 of argv\n'
-            '    set pdfPath to item 2 of argv\n'
+            '    set pptxFile to (POSIX file (item 1 of argv))\n'
+            '    set pdfFile to (POSIX file (item 2 of argv))\n'
             '    tell application "Microsoft PowerPoint"\n'
-            '        set pres to (open (POSIX file pptxPath))\n'
+            '        open pptxFile\n'
             '        delay 2\n'
-            '        save pres in (POSIX file pdfPath) as save as PDF\n'
+            '        set pres to active presentation\n'
+            '        save pres in pdfFile as save as PDF\n'
             '        delay 1\n'
             '        close pres saving no\n'
             '    end tell\n'
@@ -1294,7 +1295,7 @@ class CollageTab(QWidget):
         QWidget#CollageTab QPushButton#auto_adapt_btn {{
             background: #E8F8EE;
             color: {_GREEN};
-            border: 1.5px dashed {_GREEN};
+            border: 1px solid {_GREEN};
             border-radius: 8px;
             padding: 7px 10px;
             font-weight: 600;
