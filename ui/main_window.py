@@ -66,9 +66,9 @@ QWidget#inset   {{ background: {_WIN};  border-radius: 10px; border: 1px solid {
 QLabel {{ background: transparent; color: {_TEXT}; }}
 QLabel#h2  {{
     font-size: 15px; font-weight: 700;
-    border-left: 3px solid {_GREEN}; padding-left: 8px;
+    qproperty-alignment: AlignCenter;
 }}
-QLabel#cap    {{ color: {_TEXT2}; font-size: 11px; font-weight: 500; }}
+QLabel#cap    {{ color: {_TEXT2}; font-size: 11px; font-weight: 500; qproperty-alignment: AlignCenter; }}
 QLabel#hint   {{ color: {_TEXT2}; font-size: 12px; }}
 QLabel#badge  {{
     background: rgba(0,0,0,0.05);

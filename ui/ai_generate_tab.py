@@ -252,8 +252,8 @@ class AIGenerateTab(QWidget):
             QWidget#AIGenerateTab, QWidget#ai_right_body {{ background: #F7F7F7; }}
             QWidget#ai_sidebar, QWidget#ai_scroll_body {{ background: {_SIDE}; }}
             QWidget#ai_sidebar {{ border-right: 1px solid {_SEP}; }}
-            QLabel#h2 {{ color: {_TEXT}; font-size: 15px; font-weight: 700; border-left: 3px solid {_GREEN}; padding-left: 8px; }}
-            QLabel#cap {{ color: {_TEXT2}; font-size: 11px; font-weight: 600; }}
+            QLabel#h2 {{ color: {_TEXT}; font-size: 15px; font-weight: 700; qproperty-alignment: AlignCenter; }}
+            QLabel#cap {{ color: {_TEXT2}; font-size: 11px; font-weight: 600; qproperty-alignment: AlignCenter; }}
             QLabel#hint {{ color: {_TEXT2}; font-size: 12px; }}
             QPushButton#tagButton {{
                 background: {_INPUT}; color: {_TEXT}; border: 1px solid {_SEP};
@@ -356,19 +356,33 @@ class AIGenerateTab(QWidget):
         self._random_btn = QPushButton("🎲 随机未选项")
         self._random_btn.setObjectName("secondary")
         content.addWidget(self._random_btn)
-
-        self._generate_btn = QPushButton("✨ 开始生成")
-        self._generate_btn.setObjectName("primary")
-        self._generate_btn.setFixedHeight(44)
-        content.addWidget(self._generate_btn)
-        content.addWidget(_label("API 配置在「设置」页自动保存。", "hint"))
         content.addStretch(1)
 
         scroll.setWidget(body)
-        layout.addWidget(scroll)
+        layout.addWidget(scroll, 1)
+
+        # 「开始生成」固定在侧边栏底部，不随内容滚动
+        bottom = QWidget()
+        bottom.setObjectName("ai_scroll_body")
+        bottom_layout = QVBoxLayout(bottom)
+        bottom_layout.setContentsMargins(16, 10, 16, 16)
+        bottom_layout.setSpacing(6)
+        self._generate_btn = QPushButton("✨ 开始生成")
+        self._generate_btn.setObjectName("primary")
+        self._generate_btn.setFixedHeight(44)
+        bottom_layout.addWidget(self._generate_btn)
+        hint = _label("API 配置在「设置」页自动保存。", "hint")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        bottom_layout.addWidget(hint)
+        layout.addWidget(bottom)
         return sidebar
 
     def _build_right_panel(self) -> QWidget:
+        wrapper = QWidget()
+        wrapper_layout = QVBoxLayout(wrapper)
+        wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        wrapper_layout.setSpacing(0)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -388,15 +402,27 @@ class AIGenerateTab(QWidget):
         results_card.layout().addLayout(self._results_grid)
         layout.addWidget(results_card, 1)
 
-        save_card = _card("保存为模板")
-        save_card.layout().addWidget(_label("勾选需要保留的图片，保存后跳转到模板配置页标注屏幕四角。", "hint"))
+        scroll.setWidget(body)
+        wrapper_layout.addWidget(scroll, 1)
+
+        # 保存按钮固定在底部，不随内容滚动
+        save_bar = QFrame()
+        save_bar.setObjectName("ai_save_bar")
+        save_bar.setStyleSheet(
+            f"QFrame#ai_save_bar {{ background: #F7F7F7; border-top: 1px solid {_SEP}; }}"
+        )
+        save_layout = QHBoxLayout(save_bar)
+        save_layout.setContentsMargins(28, 12, 28, 16)
+        save_layout.setSpacing(16)
+        save_layout.addWidget(_label("勾选图片，保存后跳转标注角点", "hint"), 1)
         self._save_btn = QPushButton("保存选中 → 跳转标注角点")
         self._save_btn.setObjectName("primary")
+        self._save_btn.setFixedHeight(44)
         self._save_btn.setEnabled(False)
-        save_card.layout().addWidget(self._save_btn)
-        layout.addWidget(save_card)
-        scroll.setWidget(body)
-        return scroll
+        save_layout.addWidget(self._save_btn)
+        wrapper_layout.addWidget(save_bar)
+
+        return wrapper
 
     def _wire_signals(self):
         self._device_group.selection_changed.connect(self._on_device_changed)

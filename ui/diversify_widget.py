@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QRadioButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -135,11 +136,9 @@ class DiversifyWidget(QWidget):
         self._hint_label.setWordWrap(True)
         layout.addWidget(self._hint_label)
 
-        bottom_row = QHBoxLayout()
-        bottom_row.addStretch(1)
         self._reset_button = QPushButton("恢复默认")
-        bottom_row.addWidget(self._reset_button)
-        layout.addLayout(bottom_row)
+        self._reset_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout.addWidget(self._reset_button)
 
     def _load_from_settings(self):
         settings = QSettings("融景", "RongJing")

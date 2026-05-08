@@ -10,8 +10,6 @@ tmp_ret = collect_all('av')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('cv2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('fitz')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
@@ -59,10 +57,5 @@ app = BUNDLE(
     coll,
     name='融景.app',
     icon=None,
-    bundle_identifier='com.xili.rongjing',
-    info_plist={
-        'CFBundleVersion': '3.0.0',
-        'CFBundleShortVersionString': '3.0.0',
-        'NSHighResolutionCapable': True,
-    },
+    bundle_identifier=None,
 )

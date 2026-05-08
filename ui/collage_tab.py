@@ -539,7 +539,7 @@ class CollageTab(QWidget):
         self._output_path_label = self._label("未选择", "hint")
         self._output_path_label.setMinimumWidth(60)
         self._format_combo = QComboBox()
-        self._format_combo.addItems(["PNG", "JPEG"])
+        self._format_combo.addItems(["JPEG", "PNG"])
         self._run_collage_btn = QPushButton("开始拼图")
         self._run_collage_btn.setObjectName("primary")
         self._run_collage_btn.setMinimumHeight(40)
@@ -1296,13 +1296,13 @@ class CollageTab(QWidget):
             color: {_TEXT};
             font-size: 15px;
             font-weight: 700;
-            border-left: 3px solid {_GREEN};
-            padding-left: 8px;
+            qproperty-alignment: AlignCenter;
         }}
         QWidget#CollageTab QLabel#cap {{
             color: {_TEXT2};
             font-size: 11px;
             font-weight: 500;
+            qproperty-alignment: AlignCenter;
         }}
         QWidget#CollageTab QLabel#hint {{
             color: {_TEXT2};
