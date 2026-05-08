@@ -331,6 +331,16 @@
 - 涉及文件：`ui/collage_tab.py`
 - 状态：✅ 已完成（commit 8f4e67e）
 
+### P3.6-D: 侧边栏对齐 + 横向滚动修复
+- 目标：色块预设和自动拆分控件左右对齐，禁止侧边栏横向滚动
+- 改动：
+  - 色块从固定尺寸 QLabel 改为 Expanding QWidget，合并进统一 QGridLayout
+  - 自动拆分改用双列 QGridLayout，「已选 X 页」右对齐
+  - 所有 grid 加 `setColumnStretch` 保证占满侧边栏宽度
+  - `body.setMaximumWidth(340)` 锁定内容宽度防止 trackpad 弹性横滚
+- 涉及文件：`ui/collage_tab.py`
+- 状态：✅ 已完成（commit 9452e82, 4cb4a34）
+
 ---
 
 ## 历史
