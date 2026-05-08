@@ -341,6 +341,36 @@
 - 涉及文件：`ui/collage_tab.py`
 - 状态：✅ 已完成（commit 9452e82, 4cb4a34）
 
+### P3.6-E: AI 背景图模块升级
+- 目标：中国场景提示词 + 预览交互优化 + C2PA 元数据剥离 + 默认 3:4
+- 改动：
+  - 完全重写 `_build_prompt()`，加入中国特有元素（希沃、国旗、黑板、中文教材）
+  - 预览卡片最小 320×220 + 点击任意位置选择/取消 + 选中绿色边框
+  - `generate_backgrounds()` 返回图片执行 `Image.new + paste` 剥离 C2PA/EXIF 元数据
+  - `screen_detector.py` interior_std 阈值从 25 放宽到 40
+  - 默认比例从 4:3 改为 3:4
+- 涉及文件：`ui/ai_generate_tab.py`、`core/ai_background.py`、`core/screen_detector.py`
+- 状态：✅ 已完成（commit d221f8c）
+
+### P3.6-F: 拼图前满后补 + 按钮状态修复
+- 目标：拼图分页策略从均匀分配改为前满后补 + 修复上一页按钮不可点击
+- 改动：
+  - `calculate_auto_split` 改为前满后补：前面每张填满格子，只有最后一张放剩余
+  - `_change_preview` 调用 `_refresh_state()` 替代 `_refresh_collage_preview()` 修复按钮状态
+- 涉及文件：`core/collage_processor.py`、`ui/collage_tab.py`
+- 状态：✅ 已完成（commit d221f8c）
+
+### P3.6-G: UI 体验细节优化
+- 目标：4 项 UI 细节打磨
+- 改动：
+  - 「恢复默认」按钮从靠右改为全宽居中（Expanding 策略）
+  - 默认导出格式从 PNG 改为 JPEG
+  - AI 生成页「开始生成」按钮固定在侧边栏底部不随滚动
+  - AI 生成页「保存选中」按钮固定在右侧面板底部不随滚动
+  - 所有 h2 大标题和 cap 小标题改为居中对齐
+- 涉及文件：`ui/diversify_widget.py`、`ui/collage_tab.py`、`ui/ai_generate_tab.py`、`ui/main_window.py`
+- 状态：✅ 已完成（commit 25f7629）
+
 ---
 
 ## 历史
