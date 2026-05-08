@@ -390,6 +390,14 @@
 - 涉及文件：`ui/ai_generate_tab.py`、`core/ai_background.py`
 - 状态：✅ 已完成（commit f788076, 51eb143）
 
+### P3.6-J: AI 禁止年级文字 + 拼图自动拆分布局
+- 目标：AI 生成不出现年级/作业文字 + 自动拆分区域布局优化
+- 改动：
+  - prompt 增加禁止年级、作业、科目等教学内容文字约束
+  - 拼图「自动拆分」区域从两列改为一行（spin + 页数左对齐，已选页数右对齐）
+- 涉及文件：`ui/ai_generate_tab.py`、`ui/collage_tab.py`
+- 状态：✅ 已完成（commit 62c59b1）
+
 ---
 
 ## 历史
