@@ -681,6 +681,7 @@ class AIGenerateTab(QWidget):
         # Constraints
         parts.append("absolutely no English text, signs, diplomas, or labels anywhere in the scene")
         parts.append("all visible text and signage must be in simplified Chinese only")
+        parts.append("no text about grades, homework, class names, subjects, schedules, or any academic content visible anywhere")
         parts.append("no watermark, no logo on screen")
         parts.append("screen corners clearly visible, clean composition, realistic perspective")
         parts.append("NOT an AI-generated image, looks like a real phone photo, natural and authentic")

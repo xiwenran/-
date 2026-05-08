@@ -423,11 +423,9 @@ class CollageTab(QWidget):
         self._mini_grid.setSpacing(5)
         content.addWidget(self._mini_grid_frame)
 
-        split_grid = QGridLayout()
-        split_grid.setHorizontalSpacing(10)
-        split_grid.setVerticalSpacing(8)
-        split_grid.setColumnStretch(0, 1)
-        split_grid.setColumnStretch(1, 1)
+        split_box = QVBoxLayout()
+        split_box.setSpacing(4)
+        split_box.addWidget(self._label("自动拆分", "cap"))
         split_out_row = QHBoxLayout()
         split_out_row.setSpacing(6)
         self._output_count_spin = self._spin(1, 1, 1)
@@ -437,9 +435,9 @@ class CollageTab(QWidget):
         split_out_row.addWidget(self._pages_per_label)
         split_out_row.addStretch(1)
         self._selected_pages_label = self._label("已选 0/0 页", "hint")
-        self._add_grid_field(split_grid, 0, 0, "自动拆分", split_out_row)
-        self._add_grid_field(split_grid, 0, 1, "", self._selected_pages_label)
-        content.addLayout(split_grid)
+        split_out_row.addWidget(self._selected_pages_label)
+        split_box.addLayout(split_out_row)
+        content.addLayout(split_box)
 
     def _add_template_section(self, content: QVBoxLayout):
         content.addWidget(self._label("拼图模板", "h2"))
