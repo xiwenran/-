@@ -7,7 +7,7 @@ import time
 from typing import Iterable
 
 from PIL import Image
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -142,6 +142,29 @@ class TagGroup(QWidget):
                 btn.setChecked(False)
                 btn.blockSignals(False)
         self.selection_changed.emit(button.text() if selected else "")
+
+
+class _GenerateWorker(QThread):
+    """后台线程调用 AI 生成 API，避免阻塞 UI。"""
+    finished_ok = pyqtSignal(list)       # List[Image.Image]
+    failed = pyqtSignal(str)             # error message
+
+    def __init__(self, config, prompt: str, n: int, aspect_ratio: str, parent=None):
+        super().__init__(parent)
+        self._config = config
+        self._prompt = prompt
+        self._n = n
+        self._aspect_ratio = aspect_ratio
+
+    def run(self):
+        try:
+            images = generate_backgrounds(
+                self._config, self._prompt,
+                n=self._n, aspect_ratio=self._aspect_ratio,
+            )
+            self.finished_ok.emit(images)
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class _ImageTile(QFrame):
@@ -459,6 +482,11 @@ class AIGenerateTab(QWidget):
         if scene:
             parts.append(self._TRANSLATIONS.get(scene, scene))
 
+        # 笔记本/台式机：屏幕必须是画面主体，占 60-70% 面积
+        if device in ("笔记本", "台式机"):
+            parts.append("the screen is the dominant element filling 60-70% of the frame")
+            parts.append("close-up composition focused on the screen, minimal surrounding environment")
+
         # Chinese context — classroom vs personal
         if is_classroom:
             parts.append("Chinese school classroom with red Chinese national flag hanging on wall above the screen")
@@ -501,23 +529,33 @@ class AIGenerateTab(QWidget):
             return
 
         self._generate_btn.setEnabled(False)
-        self._generate_btn.setText("生成中...")
-        QApplication.processEvents()
-        try:
-            config = AIConfig(api_key=api_key, base_url=base_url, model=model)
-            self._images = generate_backgrounds(
-                config,
-                self._build_prompt(),
-                n=self._count_spin.value(),
-                aspect_ratio=self._aspect_combo.currentText(),
-            )
-            QApplication.processEvents()
-            self._render_results()
-        except (AIAuthError, AIRateLimitError, AIQuotaError, AIBaseURLError, AINetworkError, AIBackgroundError) as exc:
-            QMessageBox.warning(self, "生成失败", str(exc))
-        finally:
-            self._generate_btn.setEnabled(True)
-            self._generate_btn.setText("✨ 开始生成")
+        self._generate_btn.setText("⏳ 生成中，请稍候…")
+        self._empty_label.setText("正在调用 AI 生成背景图，通常需要 30-60 秒…")
+
+        config = AIConfig(api_key=api_key, base_url=base_url, model=model)
+        self._gen_worker = _GenerateWorker(
+            config, self._build_prompt(),
+            n=self._count_spin.value(),
+            aspect_ratio=self._aspect_combo.currentText(),
+            parent=self,
+        )
+        self._gen_worker.finished_ok.connect(self._on_generate_ok)
+        self._gen_worker.failed.connect(self._on_generate_failed)
+        self._gen_worker.finished.connect(self._on_generate_done)
+        self._gen_worker.start()
+
+    def _on_generate_ok(self, images: list):
+        self._images = images
+        self._render_results()
+
+    def _on_generate_failed(self, error: str):
+        self._empty_label.setText("生成后在这里预览结果。")
+        QMessageBox.warning(self, "生成失败", error)
+
+    def _on_generate_done(self):
+        self._generate_btn.setEnabled(True)
+        self._generate_btn.setText("✨ 开始生成")
+        self._gen_worker = None
 
     def _render_results(self):
         self._clear_results()
