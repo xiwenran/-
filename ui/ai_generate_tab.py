@@ -661,9 +661,9 @@ class AIGenerateTab(QWidget):
         if is_classroom:
             parts.append("Chinese school classroom with red Chinese national flag hanging on wall above the screen")
             if device == "希沃一体机":
-                # 希沃一体机：墙面除国旗外完全干净
-                parts.append("walls must be completely clean and bare except for the national flag, absolutely no banners, no posters, no signs, no slogans, no text of any kind on the walls")
-                parts.append("if chalkboard is visible it must be completely clean and blank, no chalk writing")
+                # 希沃一体机：墙上标语保留，但黑板必须干净无板书
+                parts.append("red educational banners with Chinese calligraphy slogans on the wall near the flag")
+                parts.append("if chalkboard is visible it must be completely clean and blank, absolutely no chalk writing, no handwritten text, no diagrams on the board surface")
             else:
                 parts.append("red educational banners with Chinese calligraphy slogans on the wall")
                 parts.append("green chalkboard visible on the sides of the screen")
