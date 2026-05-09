@@ -706,7 +706,10 @@ class AIGenerateTab(QWidget):
 
         self._generate_btn.setEnabled(False)
         self._generate_btn.setText("⏳ 生成中，请稍候…")
+        self._clear_results()
+        self._empty_label.setVisible(True)
         self._empty_label.setText("正在调用 AI 生成背景图，通常需要 30-60 秒…")
+        self._save_btn.setEnabled(False)
 
         config = AIConfig(api_key=api_key, base_url=base_url, model=model)
         self._gen_worker = _GenerateWorker(
