@@ -152,6 +152,7 @@ class _GenerateWorker(QThread):
     """后台线程调用 AI 生成 API，避免阻塞 UI。"""
     finished_ok = pyqtSignal(list)       # List[Image.Image]
     failed = pyqtSignal(str)             # error message
+    progress = pyqtSignal(int, int)      # (current, total)
 
     def __init__(self, config, prompt: str, n: int, aspect_ratio: str, parent=None):
         super().__init__(parent)
@@ -162,10 +163,15 @@ class _GenerateWorker(QThread):
 
     def run(self):
         try:
-            images = generate_backgrounds(
-                self._config, self._prompt,
-                n=self._n, aspect_ratio=self._aspect_ratio,
-            )
+            # gpt-image-2 不支持 n>1，需要循环调用
+            images: list = []
+            for i in range(self._n):
+                batch = generate_backgrounds(
+                    self._config, self._prompt,
+                    n=1, aspect_ratio=self._aspect_ratio,
+                )
+                images.extend(batch)
+                self.progress.emit(i + 1, self._n)
             self.finished_ok.emit(images)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -711,8 +717,13 @@ class AIGenerateTab(QWidget):
         )
         self._gen_worker.finished_ok.connect(self._on_generate_ok)
         self._gen_worker.failed.connect(self._on_generate_failed)
+        self._gen_worker.progress.connect(self._on_generate_progress)
         self._gen_worker.finished.connect(self._on_generate_done)
         self._gen_worker.start()
+
+    def _on_generate_progress(self, current: int, total: int):
+        self._generate_btn.setText(f"⏳ 生成中 ({current}/{total})…")
+        self._empty_label.setText(f"正在生成第 {current}/{total} 张背景图…")
 
     def _on_generate_ok(self, images: list):
         self._images = images
