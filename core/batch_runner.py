@@ -3,6 +3,7 @@ import random
 import re
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from fractions import Fraction
 from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -246,10 +247,13 @@ class VideoRunner(QThread):
                             codec_name, codec_options, codec_attrs = _detect_encoder(
                                 bg_w, bg_h, fps, use_videotoolbox
                             )
-                            out_vs = outp.add_stream(codec_name, rate=in_vs.average_rate)
+                            out_vs = outp.add_stream(codec_name)
                             out_vs.width = bg_w
                             out_vs.height = bg_h
                             out_vs.pix_fmt = "yuv420p"
+                            video_time_base = in_vs.time_base or Fraction(1, 90000)
+                            out_vs.time_base = video_time_base
+                            out_vs.codec_context.time_base = video_time_base
                             if codec_options:
                                 out_vs.options = codec_options
                             if "bit_rate" in codec_attrs:
@@ -271,12 +275,32 @@ class VideoRunner(QThread):
                             streams = [in_vs] + list(inp.streams.audio)
                             in_audio_list = list(inp.streams.audio)
                             audio_pts = [0] * len(out_as_list)
+                            audio_pts_initialized = [False] * len(out_as_list)
+                            audio_sample_rates = [
+                                stream.codec_context.sample_rate or 44100
+                                for stream in in_audio_list
+                            ]
+                            stream_video_start_seconds = (
+                                float(in_vs.start_time * in_vs.time_base)
+                                if in_vs.start_time is not None and in_vs.time_base is not None
+                                else None
+                            )
+                            stream_audio_start_seconds = [
+                                float(stream.start_time * stream.time_base)
+                                if stream.start_time is not None and stream.time_base is not None
+                                else None
+                                for stream in in_audio_list
+                            ]
+                            nominal_frame_interval = 1.0 / fps if fps > 0 else 1.0 / 25.0
+                            first_video_pts_seconds = None
+                            last_video_pts_seconds = None
                             thread_errors = []
                             error_lock = threading.Lock()
 
                             decode_q = queue.Queue(maxsize=num_workers * 2)
                             audio_q = queue.Queue(maxsize=64)
                             encode_q = queue.Queue(maxsize=num_workers)
+                            pending_audio_before_video = [[] for _ in out_as_list]
 
                             def _record_thread_error(exc: Exception):
                                 with error_lock:
@@ -310,6 +334,61 @@ class VideoRunner(QThread):
                                             except queue.Empty:
                                                 pass
 
+                            def _pts_to_seconds(pts, time_base):
+                                if pts is None or time_base is None:
+                                    return None
+                                return float(pts * time_base)
+
+                            def _seconds_to_pts(seconds: float) -> int:
+                                pts = int(round(seconds / float(video_time_base)))
+                                return pts
+
+                            def _resolve_video_pts_seconds(frame) -> float:
+                                nonlocal first_video_pts_seconds, last_video_pts_seconds
+                                pts_seconds = _pts_to_seconds(frame.pts, frame.time_base)
+                                if pts_seconds is None:
+                                    if last_video_pts_seconds is not None:
+                                        pts_seconds = last_video_pts_seconds + nominal_frame_interval
+                                    elif stream_video_start_seconds is not None:
+                                        pts_seconds = stream_video_start_seconds
+                                    else:
+                                        pts_seconds = 0.0
+                                if last_video_pts_seconds is not None and pts_seconds < last_video_pts_seconds:
+                                    pts_seconds = last_video_pts_seconds
+                                if first_video_pts_seconds is None:
+                                    first_video_pts_seconds = pts_seconds
+                                last_video_pts_seconds = pts_seconds
+                                return pts_seconds
+
+                            def _ensure_audio_pts_initialized(idx: int, origin_seconds):
+                                if audio_pts_initialized[idx]:
+                                    return
+                                if origin_seconds is None:
+                                    origin_seconds = stream_audio_start_seconds[idx]
+                                if origin_seconds is None:
+                                    origin_seconds = first_video_pts_seconds or 0.0
+                                base_seconds = first_video_pts_seconds or 0.0
+                                audio_pts[idx] = int(round((origin_seconds - base_seconds) * audio_sample_rates[idx]))
+                                audio_pts_initialized[idx] = True
+
+                            def _queue_audio_frames(idx: int, origin_seconds, resampled_frames):
+                                _ensure_audio_pts_initialized(idx, origin_seconds)
+                                for resampled in resampled_frames:
+                                    if self._abort:
+                                        break
+                                    resampled.pts = audio_pts[idx]
+                                    audio_pts[idx] += resampled.samples
+                                    if not _put_with_abort(audio_q, ("audio", idx, resampled)):
+                                        break
+
+                            def _flush_pending_audio():
+                                if first_video_pts_seconds is None:
+                                    return
+                                for idx, buffered_items in enumerate(pending_audio_before_video):
+                                    while buffered_items and not self._abort:
+                                        origin_seconds, resampled_frames = buffered_items.pop(0)
+                                        _queue_audio_frames(idx, origin_seconds, resampled_frames)
+
                             def _decoder_worker():
                                 frame_i = 0
                                 try:
@@ -324,8 +403,10 @@ class VideoRunner(QThread):
                                             for frame in packet.decode():
                                                 if self._abort:
                                                     break
+                                                pts_seconds = _resolve_video_pts_seconds(frame)
+                                                _flush_pending_audio()
                                                 pil = frame.to_image().convert("RGB")
-                                                if not _put_with_abort(decode_q, (frame_i, pil)):
+                                                if not _put_with_abort(decode_q, (frame_i, pts_seconds, pil)):
                                                     break
                                                 frame_i += 1
 
@@ -335,17 +416,25 @@ class VideoRunner(QThread):
                                                 for frame in packet.decode():
                                                     if self._abort:
                                                         break
-                                                    for resampled in resamplers[idx].resample(frame):
-                                                        if self._abort:
-                                                            break
-                                                        resampled.pts = audio_pts[idx]
-                                                        audio_pts[idx] += resampled.samples
-                                                        item = ("audio", idx, resampled)
-                                                        if not _put_with_abort(audio_q, item):
-                                                            break
+                                                    origin_seconds = _pts_to_seconds(
+                                                        frame.pts, frame.time_base
+                                                    )
+                                                    resampled_frames = list(
+                                                        resamplers[idx].resample(frame)
+                                                    )
+                                                    if first_video_pts_seconds is None:
+                                                        pending_audio_before_video[idx].append(
+                                                            (origin_seconds, resampled_frames)
+                                                        )
+                                                        continue
+                                                    _queue_audio_frames(
+                                                        idx, origin_seconds, resampled_frames
+                                                    )
+                                    _flush_pending_audio()
                                 except Exception as exc:
                                     _record_thread_error(exc)
                                 finally:
+                                    _flush_pending_audio()
                                     _send_sentinel(decode_q)
                                     _send_sentinel(audio_q, encoder)
 
@@ -358,6 +447,7 @@ class VideoRunner(QThread):
                                 nonlocal done
                                 video_done = False
                                 audio_done = False
+                                last_video_out_pts = None
                                 try:
                                     while not (video_done and audio_done):
                                         while not audio_done:
@@ -396,9 +486,17 @@ class VideoRunner(QThread):
                                             video_done = True
                                             continue
 
-                                        fi, rgb_result = video_item
+                                        fi, pts_seconds, rgb_result = video_item
                                         out_frame = av.VideoFrame.from_image(rgb_result)
-                                        out_frame.pts = fi
+                                        relative_seconds = max(
+                                            0.0, pts_seconds - (first_video_pts_seconds or 0.0)
+                                        )
+                                        out_pts = _seconds_to_pts(relative_seconds)
+                                        if last_video_out_pts is not None and out_pts <= last_video_out_pts:
+                                            out_pts = last_video_out_pts + 1
+                                        out_frame.pts = out_pts
+                                        out_frame.time_base = video_time_base
+                                        last_video_out_pts = out_pts
                                         for p in out_vs.encode(out_frame):
                                             outp.mux(p)
 
@@ -439,9 +537,9 @@ class VideoRunner(QThread):
                                     and not thread_errors
                                     and len(pending) > max_pending
                                 ):
-                                    fi, fut = pending.popleft()
+                                    fi, pts_seconds, fut = pending.popleft()
                                     rgb_result = fut.result()   # blocks until this frame is ready
-                                    if not _put_with_abort(encode_q, (fi, rgb_result)):
+                                    if not _put_with_abort(encode_q, (fi, pts_seconds, rgb_result)):
                                         break
 
                             decoder = threading.Thread(
@@ -471,9 +569,9 @@ class VideoRunner(QThread):
                                             decode_done = True
                                             break
 
-                                        fi, pil = item
+                                        fi, pts_seconds, pil = item
                                         fut = pool.submit(embed_image_pil_fast, pil, cache)
-                                        pending.append((fi, fut))
+                                        pending.append((fi, pts_seconds, fut))
                                         _drain(window)
 
                                     _drain(0)
