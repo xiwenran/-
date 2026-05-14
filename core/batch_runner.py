@@ -143,12 +143,28 @@ class VideoRunner(QThread):
 
     def run(self):
         import av
+        import queue
+        import threading
+        import traceback
 
         # Use N-1 CPU cores for frame processing; leave one for decode/encode I/O.
         # PIL's C code and numpy release the GIL, so threads give real parallelism.
         num_workers = max(1, min(6, (os.cpu_count() or 2) - 1))
 
         try:
+            try:
+                av.codec.Codec("h264_videotoolbox", "w")
+                videotoolbox_available = True
+            except Exception:
+                videotoolbox_available = False
+
+            def _detect_encoder(bg_w: int, bg_h: int, fps_value: float):
+                if videotoolbox_available:
+                    bit_rate = int(bg_w * bg_h * fps_value * 0.07)
+                    bit_rate = min(bit_rate, 20_000_000)
+                    return "h264_videotoolbox", {}, {"bit_rate": bit_rate}
+                return "libx264", {"crf": "18", "preset": "veryfast"}, {}
+
             os.makedirs(self.output_dir, exist_ok=True)
 
             # Pre-scan frame counts
@@ -194,11 +210,15 @@ class VideoRunner(QThread):
                         in_vs = inp.streams.video[0]
 
                         # Output video stream (H.264)
-                        out_vs = outp.add_stream("libx264", rate=in_vs.average_rate)
+                        codec_name, codec_options, codec_attrs = _detect_encoder(bg_w, bg_h, fps)
+                        out_vs = outp.add_stream(codec_name, rate=in_vs.average_rate)
                         out_vs.width = bg_w
                         out_vs.height = bg_h
                         out_vs.pix_fmt = "yuv420p"
-                        out_vs.options = {"crf": "18", "preset": "veryfast"}
+                        if codec_options:
+                            out_vs.options = codec_options
+                        if "bit_rate" in codec_attrs:
+                            out_vs.codec_context.bit_rate = codec_attrs["bit_rate"]
 
                         # Output audio streams (AAC re-encode)
                         out_as_list = []
@@ -215,71 +235,226 @@ class VideoRunner(QThread):
 
                         streams = [in_vs] + list(inp.streams.audio)
                         in_audio_list = list(inp.streams.audio)
-                        frame_i = 0
                         audio_pts = [0] * len(out_as_list)
+                        thread_errors = []
+                        error_lock = threading.Lock()
+
+                        decode_q = queue.Queue(maxsize=num_workers * 2)
+                        audio_q = queue.Queue(maxsize=64)
+                        encode_q = queue.Queue(maxsize=num_workers)
+
+                        def _record_thread_error(exc: Exception):
+                            with error_lock:
+                                thread_errors.append(
+                                    f"{str(exc)}\n{traceback.format_exc()}"
+                                )
+                            self._abort = True
+
+                        def _put_with_abort(q, item):
+                            while not self._abort:
+                                try:
+                                    q.put(item, timeout=0.1)
+                                    return True
+                                except queue.Full:
+                                    continue
+                            return False
+
+                        def _send_sentinel(q, consumer=None):
+                            # If the consumer thread has died (e.g. crashed before
+                            # setting _abort), free a slot so we never block forever.
+                            while True:
+                                try:
+                                    q.put(None, timeout=0.1)
+                                    return
+                                except queue.Full:
+                                    if self._abort or (
+                                        consumer is not None and not consumer.is_alive()
+                                    ):
+                                        try:
+                                            q.get_nowait()
+                                        except queue.Empty:
+                                            pass
+
+                        def _decoder_worker():
+                            frame_i = 0
+                            try:
+                                for packet in inp.demux(*streams):
+                                    if self._abort:
+                                        break
+                                    # NOTE: don't skip dts=None packets — the final
+                                    # flush packet (dts=None) is what drains the
+                                    # decoder's reorder buffer (last B-frames).
+
+                                    if packet.stream == in_vs:
+                                        for frame in packet.decode():
+                                            if self._abort:
+                                                break
+                                            pil = frame.to_image().convert("RGB")
+                                            if not _put_with_abort(decode_q, (frame_i, pil)):
+                                                break
+                                            frame_i += 1
+
+                                    elif packet.stream in in_audio_list:
+                                        idx = in_audio_list.index(packet.stream)
+                                        if idx < len(out_as_list):
+                                            for frame in packet.decode():
+                                                if self._abort:
+                                                    break
+                                                for resampled in resamplers[idx].resample(frame):
+                                                    if self._abort:
+                                                        break
+                                                    resampled.pts = audio_pts[idx]
+                                                    audio_pts[idx] += resampled.samples
+                                                    item = ("audio", idx, resampled)
+                                                    if not _put_with_abort(audio_q, item):
+                                                        break
+                            except Exception as exc:
+                                _record_thread_error(exc)
+                            finally:
+                                _send_sentinel(decode_q)
+                                _send_sentinel(audio_q, encoder)
+
+                        def _encode_audio_item(item):
+                            _, idx, resampled = item
+                            for p in out_as_list[idx].encode(resampled):
+                                outp.mux(p)
+
+                        def _encoder_worker():
+                            nonlocal done
+                            video_done = False
+                            audio_done = False
+                            try:
+                                while not (video_done and audio_done):
+                                    while not audio_done:
+                                        try:
+                                            audio_item = audio_q.get_nowait()
+                                        except queue.Empty:
+                                            break
+                                        if audio_item is None:
+                                            audio_done = True
+                                            break
+                                        _encode_audio_item(audio_item)
+
+                                    if self._abort:
+                                        video_done = True
+                                        audio_done = True
+                                        break
+
+                                    if video_done:
+                                        if not audio_done:
+                                            try:
+                                                audio_item = audio_q.get(timeout=0.1)
+                                            except queue.Empty:
+                                                continue
+                                            if audio_item is None:
+                                                audio_done = True
+                                            else:
+                                                _encode_audio_item(audio_item)
+                                        continue
+
+                                    try:
+                                        video_item = encode_q.get(timeout=0.1)
+                                    except queue.Empty:
+                                        continue
+
+                                    if video_item is None:
+                                        video_done = True
+                                        continue
+
+                                    fi, rgb_result = video_item
+                                    out_frame = av.VideoFrame.from_image(rgb_result)
+                                    out_frame.pts = fi
+                                    for p in out_vs.encode(out_frame):
+                                        outp.mux(p)
+
+                                    done += 1
+                                    if fi % 30 == 0 or fi == 1:
+                                        self.progress.emit(
+                                            done, total,
+                                            f"{vid_name}/{template.name}  {fi}/{n_frames} 帧"
+                                        )
+
+                                if not self._abort:
+                                    for p in out_vs.encode(None):
+                                        outp.mux(p)
+
+                                    for i, (out_as, resampler) in enumerate(
+                                        zip(out_as_list, resamplers)
+                                    ):
+                                        for resampled in resampler.resample(None):
+                                            resampled.pts = audio_pts[i]
+                                            audio_pts[i] += resampled.samples
+                                            for p in out_as.encode(resampled):
+                                                outp.mux(p)
+                                        for p in out_as.encode():
+                                            outp.mux(p)
+                            except Exception as exc:
+                                _record_thread_error(exc)
 
                         # Sliding window of in-flight futures: deque of (frame_i, Future).
                         # We keep at most num_workers*2 frames in flight so memory stays
-                        # bounded, then drain from the front (in order) to encode.
+                        # bounded, then drain from the front (in order) to enqueue.
                         pending: deque = deque()
                         window = num_workers * 2
 
                         def _drain(max_pending: int):
-                            """Encode completed futures from the front, keeping ≤ max_pending."""
-                            nonlocal done
-                            while len(pending) > max_pending:
+                            """Enqueue completed futures from the front, keeping ≤ max_pending."""
+                            while (
+                                not self._abort
+                                and not thread_errors
+                                and len(pending) > max_pending
+                            ):
                                 fi, fut = pending.popleft()
                                 rgb_result = fut.result()   # blocks until this frame is ready
-                                out_frame = av.VideoFrame.from_image(rgb_result)
-                                out_frame.pts = fi
-                                for p in out_vs.encode(out_frame):
-                                    outp.mux(p)
-                                done += 1
-                                if fi % 30 == 0 or fi == 1:
-                                    self.progress.emit(
-                                        done, total,
-                                        f"{vid_name}/{template.name}  {fi}/{n_frames} 帧"
-                                    )
+                                if not _put_with_abort(encode_q, (fi, rgb_result)):
+                                    break
 
-                        for packet in inp.demux(*streams):
-                            if self._abort:
-                                self.finished.emit(False, "已取消"); return
-                            if packet.dts is None:
-                                continue
+                        decoder = threading.Thread(
+                            target=_decoder_worker,
+                            name="VideoRunnerDecode",
+                            daemon=True,
+                        )
+                        encoder = threading.Thread(
+                            target=_encoder_worker,
+                            name="VideoRunnerEncode",
+                            daemon=True,
+                        )
+                        decoder.start()
+                        encoder.start()
 
-                            if packet.stream == in_vs:
-                                for frame in packet.decode():
-                                    pil = frame.to_image().convert("RGB")
+                        try:
+                            try:
+                                decode_done = False
+                                while not self._abort and not thread_errors and not decode_done:
+                                    try:
+                                        item = decode_q.get(timeout=0.1)
+                                    except queue.Empty:
+                                        _drain(window)
+                                        continue
+
+                                    if item is None:
+                                        decode_done = True
+                                        break
+
+                                    fi, pil = item
                                     fut = pool.submit(embed_image_pil_fast, pil, cache)
-                                    pending.append((frame_i, fut))
-                                    frame_i += 1
-                                    _drain(window)   # keep window bounded
+                                    pending.append((fi, fut))
+                                    _drain(window)
 
-                            elif packet.stream in in_audio_list:
-                                idx = in_audio_list.index(packet.stream)
-                                if idx < len(out_as_list):
-                                    for frame in packet.decode():
-                                        for resampled in resamplers[idx].resample(frame):
-                                            resampled.pts = audio_pts[idx]
-                                            audio_pts[idx] += resampled.samples
-                                            for p in out_as_list[idx].encode(resampled):
-                                                outp.mux(p)
+                                _drain(0)
+                            except Exception:
+                                self._abort = True
+                                raise
+                        finally:
+                            _send_sentinel(encode_q, encoder)
+                            decoder.join()
+                            encoder.join()
 
-                        # Flush all remaining video futures in order
-                        _drain(0)
+                        if thread_errors:
+                            raise RuntimeError(thread_errors[0])
 
-                        # Flush video encoder
-                        for p in out_vs.encode():
-                            outp.mux(p)
-                        # Flush audio resamplers and encoders
-                        for i, (out_as, resampler) in enumerate(zip(out_as_list, resamplers)):
-                            for resampled in resampler.resample(None):
-                                resampled.pts = audio_pts[i]
-                                audio_pts[i] += resampled.samples
-                                for p in out_as.encode(resampled):
-                                    outp.mux(p)
-                            for p in out_as.encode():
-                                outp.mux(p)
+                        if self._abort:
+                            self.finished.emit(False, "已取消"); return
 
                     self.progress.emit(done, total, f"✓ {vid_name}/{template.name}.mp4")
 
