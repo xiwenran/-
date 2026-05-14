@@ -152,11 +152,26 @@ class VideoRunner(QThread):
         num_workers = max(1, min(6, (os.cpu_count() or 2) - 1))
 
         try:
-            try:
-                av.codec.Codec("h264_videotoolbox", "w")
-                videotoolbox_available = True
-            except Exception:
-                videotoolbox_available = False
+            def _probe_videotoolbox() -> bool:
+                """真实打开一次 h264_videotoolbox 编码器再判断是否可用。
+
+                关键：av.codec.Codec(name) 只查 FFmpeg 是否注册了这个编码器
+                名字，不会调 avcodec_open2。打包成 .app 后 FFmpeg 常常注册了
+                名字但实际 open 失败（VideoToolbox 框架链接/硬件会话问题）。
+                必须真正 .open() 一次才能确认编码器能用。
+                """
+                try:
+                    cc = av.codec.CodecContext.create("h264_videotoolbox", "w")
+                    cc.width = 64
+                    cc.height = 64
+                    cc.pix_fmt = "yuv420p"
+                    cc.open()  # 真正触发 avcodec_open2
+                    # CodecContext 无公开 close()，出作用域自动回收
+                    return True
+                except Exception:
+                    return False
+
+            videotoolbox_available = _probe_videotoolbox()
 
             def _detect_encoder(bg_w: int, bg_h: int, fps_value: float):
                 if videotoolbox_available:
