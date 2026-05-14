@@ -81,6 +81,69 @@ def _resolve_size(model: str, aspect_ratio: str) -> str:
     return table.get(aspect_ratio, "1024x1024")
 
 
+def _build_http_client(base_url: str, timeout: float):
+    """构造带显式证书链和系统代理探测的 httpx client。
+
+    当前只做 localhost/127.* 直连判断；未实现 no_proxy 的完整匹配规则，
+    取舍原因是本期目标是修复打包环境下最常见的证书与系统代理问题，避免在
+    单文件补丁里引入更大范围的代理规则解析分支。
+    """
+    import httpx
+
+    try:
+        import ssl
+        import urllib.request
+        from urllib.parse import urlparse
+
+        import certifi
+
+        parsed = urlparse(base_url)
+        host = (parsed.hostname or "").lower()
+        is_localhost = host == "localhost" or host.startswith("127.")
+
+        proxy_url = None
+        if not is_localhost:
+            proxies = urllib.request.getproxies()
+            proxy_url = proxies.get("https") or proxies.get("http")
+
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        return httpx.Client(verify=ssl_context, proxy=proxy_url, timeout=timeout)
+    except Exception:
+        # 加固步骤失败（如打包环境缺 certifi 证书文件、getproxies 异常等）→
+        # 降级到 httpx 默认行为，不让"加固"本身成为崩溃源。
+        return httpx.Client(timeout=timeout)
+
+
+def _format_network_error(e: Exception, base_url: str) -> str:
+    import socket
+    import ssl
+
+    chain = []
+    seen = set()
+    current = e
+    while current is not None and id(current) not in seen:
+        chain.append(current)
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+
+    chain_text = " | ".join(f"{type(err).__name__}: {err}" for err in chain)
+    lowered = chain_text.lower()
+
+    if any(isinstance(err, ssl.SSLError) for err in chain) or "ssl" in lowered or "certificate" in lowered:
+        reason = "SSL 证书验证失败，可能是打包环境证书问题"
+    elif any(isinstance(err, socket.gaierror) for err in chain) or "name or service not known" in lowered or "nodename nor servname" in lowered:
+        reason = "域名解析失败，检查 Base URL 是否正确"
+    elif "connection refused" in lowered:
+        reason = "连接被拒绝，目标服务可能未运行"
+    elif type(e).__name__ == "APITimeoutError" or "timed out" in lowered:
+        reason = "连接超时"
+    else:
+        reason = "网络连接失败"
+
+    root = chain[-1] if chain else e
+    return f"{reason}。Base URL: {base_url}。底层异常: {type(root).__name__}: {root}"
+
+
 # ── 核心 API ─────────────────────────────────────────────────────────
 def generate_backgrounds(
     config: AIConfig,
@@ -94,36 +157,41 @@ def generate_backgrounds(
     except ImportError:
         raise AIBackgroundError("openai SDK 未安装，请运行 `pip install openai`")
 
+    http_client = _build_http_client(config.base_url, config.timeout)
     client = OpenAI(
         api_key=config.api_key,
         base_url=config.base_url,
-        timeout=config.timeout,
+        http_client=http_client,
     )
 
     size = _resolve_size(config.model, aspect_ratio)
 
     try:
-        resp = client.images.generate(
-            model=config.model,
-            prompt=prompt,
-            size=size,
-            n=n,
-        )
-    except AuthenticationError as e:
-        raise AIAuthError(f"API Key 无效: {e}") from e
-    except RateLimitError as e:
-        msg = str(e).lower()
-        if "quota" in msg or "insufficient" in msg or "billing" in msg:
-            raise AIQuotaError(f"配额耗尽: {e}") from e
-        raise AIRateLimitError(f"限流: {e}") from e
-    except (APIConnectionError, APITimeoutError) as e:
-        raise AINetworkError(f"网络错误: {e}") from e
-    except NotFoundError as e:
-        raise AIBaseURLError(f"模型 '{config.model}' 不存在或 Base URL '{config.base_url}' 不支持图像生成: {e}") from e
-    except BadRequestError as e:
-        raise AIBackgroundError(f"参数错误: {e}") from e
-    except Exception as e:
-        raise AIBackgroundError(f"未知错误: {e}") from e
+        try:
+            resp = client.images.generate(
+                model=config.model,
+                prompt=prompt,
+                size=size,
+                n=n,
+            )
+        except AuthenticationError as e:
+            raise AIAuthError(f"API Key 无效: {e}") from e
+        except RateLimitError as e:
+            msg = str(e).lower()
+            if "quota" in msg or "insufficient" in msg or "billing" in msg:
+                raise AIQuotaError(f"配额耗尽: {e}") from e
+            raise AIRateLimitError(f"限流: {e}") from e
+        except (APIConnectionError, APITimeoutError) as e:
+            detail = _format_network_error(e, config.base_url)
+            raise AINetworkError(detail) from e
+        except NotFoundError as e:
+            raise AIBaseURLError(f"模型 '{config.model}' 不存在或 Base URL '{config.base_url}' 不支持图像生成: {e}") from e
+        except BadRequestError as e:
+            raise AIBackgroundError(f"参数错误: {e}") from e
+        except Exception as e:
+            raise AIBackgroundError(f"未知错误: {e}") from e
+    finally:
+        http_client.close()
 
     images = []
     for item in resp.data:
